@@ -1,0 +1,673 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Change Log:"
+/bin/echo "----------:"
+/bin/echo "2015/11/12: allow for two space-separated values to be supplied"
+/bin/echo "            in a \"bypass check\" field, the first value will be"
+/bin/echo "            the routine name to be executed; the second, optional"
+/bin/echo "            value will be an argument passed to the routine - the"
+/bin/echo "            bypass check will determine whether a given parameter"
+/bin/echo "            file line is processed or bypassed (new parameter field)"
+/bin/echo ""
+/bin/echo "2015/11/12: allow for two strings to be grep'ed for in the process"
+/bin/echo "            list (new parameter field)"
+/bin/echo ""
+/bin/echo "Script nscaProcessCPU information and usage:"
+/bin/echo "--------------------------------------------"
+/bin/echo " 1. monitors process CPU utilization for Linux systems only"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or in /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. execution requires presence one parm file named \"processCPU.dta\""
+/bin/echo "    in the executing user's home directory,"
+/bin/echo " 5. each parameter file line consists of 7 pipe-delimited fields:"
+/bin/echo "       process label  - the label used for the Nagios service, e.g."
+/bin/echo "                        \"Process CPU Utilization: processLabel\""
+/bin/echo "     process string 1 - string to look for in the process list"
+/bin/echo "     process string 2 - additional string to look for in the process"
+/bin/echo "                        list"
+/bin/echo "          thresholds  - if supplied, a comma-delimited string which"
+/bin/echo "                        may specify threshold values"        
+/bin/echo "                        Valid threshold parameter options:"  
+/bin/echo "                           warn"  
+/bin/echo "                           crit"  
+/bin/echo "                           noPerfData (no Nagios performance data)"
+/bin/echo "                                      (i.e., no data to Graphite)"
+/bin/echo "                        Examples:"  
+/bin/echo "                           warn=20"        
+/bin/echo "                           crit=30"        
+/bin/echo "                           warn=30,crit=35"        
+/bin/echo "                           warn=30,crit=35,noPerfData"        
+/bin/echo "    hostname override - if the target Nagios host is something other"
+/bin/echo "                        than the local hostname, supply the target"
+/bin/echo "                        Nagios host value here"
+/bin/echo "         servicegroup - the desired Nagios \"servicegroup\""
+/bin/echo "                        association for this process - if blank"
+/bin/echo "                        or invalid (not known to Nagios), the"
+/bin/echo "                        default servicegroup assocation for this"
+/bin/echo "                        host will be used"
+/bin/echo "         bypass check - if used, this value must be the name of a"
+/bin/echo "                        routine in the executing user's home"
+/bin/echo "                        directory used to determine whether or not"
+/bin/echo "                        this particular process check (for string 1,"
+/bin/echo "                        and string 2, if present) should be"
+/bin/echo "                        bypassed; the routine must \"echo\" out"
+/bin/echo "                        a value of YES, Yes, or yes (to bypass the"
+/bin/echo "                        check, or NO, No, or no (to execute the"
+/bin/echo "                        checkin - for example:"
+/bin/echo "                        if a process should always be running except"
+/bin/echo "                        when something else is running (like a"
+/bin/echo "                        cold backup), then a bypass check routine"
+/bin/echo "                        could be used to determine if that"
+/bin/echo "                        \"something else\" is running or not; if so"
+/bin/echo "                        the routine can output a \"yes\" (to bypass"
+/bin/echo "                        the check) or \"no\" to NOT bypass and do"
+/bin/echo "                        the check"
+/bin/echo " 6. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 7. accepts \"tries=n\" argument (case insensitive) to be used"
+/bin/echo "    as the \"max_check_attempts\" value in the auto-deployed"
+/bin/echo "    Nagios service (if not supplied, default is 1)"
+/bin/echo "    Explanation - if there are warning and/or critical thresholds"
+/bin/echo "    in effect for this monitor, and if the warning/critical action"
+/bin/echo "    (email/alert) should occur immediately upon a threshold being"
+/bin/echo "    met/exceeded, then don't supply this argument, or supply"
+/bin/echo "    \"tries=1\". However, if you want a threshold-met/exceeded"
+/bin/echo "    condition to persist for some duration before action is taken,"
+/bin/echo "    then use this argument to define the desired duration."
+/bin/echo "    The \"duration\" is actually the number of consecutive times"
+/bin/echo "    the Nagios service must be set to a WARNING or CRITICAL state"
+/bin/echo "    in order to trigger an action. For example, if this script"
+/bin/echo "    is run every five minutes and a non-OKAY condition must"
+/bin/echo "    persist for ten minutes before notification takes place,"
+/bin/echo "    then use \"tries=3\":"
+/bin/echo "    a. problem state onset occurs - Nagios check attempts=1"
+/bin/echo "    b. 5 minutes later, problem state persists - check attempts=2"
+/bin/echo "    c. 5 minutes later, problem state persists - check attempts=3,"
+/bin/echo "       action (email/alert) is triggered"
+/bin/echo " 8. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 9. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo "    (also see \"hostname override\" above)"
+/bin/echo "10. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_ProcessCPU\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to processCPU-monitoring parameter"
+/bin/echo "    input)"
+/bin/echo "11. if expected execution results are not observed, check the"
+/bin/echo "    contents of the \"nscaProcessCPU_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   targetHost=$nagiosHost
+   nagiosSvc="Process CPU Utilization: $processLabel"
+else
+#  Nagios service setup triggered with this execution (first time)
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="Process CPU Utilization: ${processLabel}"
+   fi
+   nagiosMsg="ProcessCPU@${nagiosHost}@${nagiosHostType}@${serviceGroup}@${capturedSvc}@${tries}@"
+   capturedSvc=""
+fi
+# Format an NSCA-compatible string and send to Nagios via NSCA
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ $debugSw = no ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+if [ $serviceSetup = Yes ]
+then
+   exitCode=0
+fi
+}
+#
+checkThresholds ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### checkThresholds #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+for thresholdType in warn crit
+do
+   case $thresholdType in
+      warn) threshold=$warnThresh
+            statCode=1 ;;
+      crit) threshold=$critThresh
+            statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $(/bin/echo "${processCPU}>=${threshold}" | /usr/bin/bc) -gt 0 ]
+      then
+         if [ $statCode -gt $exitCode ]
+         then
+            exitCode=$statCode
+         fi
+      fi
+   fi
+done
+}
+#
+setupThresholds ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### setupThresholds #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+warnThresh=X
+critThresh=X
+#
+argString=$(/bin/echo ${argString} | /bin/sed 's/,/ /g')
+if [ "$argString" != "" ]
+then
+   oldIFS="$IFS"
+   IFS=" "
+   threshString=$(/bin/echo ${argString} | /bin/sed 's/ /,/g')
+   threshDisplay=", thresholds: ${threshString}"
+   for argNum in $argString
+   do
+      argType=$(/bin/echo ${argNum} | ${cut} -f1 -d"=")
+      case $argType in
+        crit) critThresh=$(/bin/echo ${argNum} | ${cut} -f2 -d"=") ;;
+        warn) warnThresh=$(/bin/echo ${argNum} | ${cut} -f2 -d"=") ;;
+      esac
+   done
+   IFS="$oldIFS"
+else
+   threshDisplay=""
+fi
+}
+#
+perfDataCheck ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "#########################"
+   /bin/echo "##### perfDataCheck #####"
+   /bin/echo "#########################"
+   set -x
+fi
+#
+/bin/echo $argString | /bin/grep noPerfData > /dev/null
+if [ $? -eq 0 ]
+then
+   perfData=No
+   argString=$(/bin/echo ${argString} | /bin/sed 's/noPerfData//g' | /bin/sed 's/,,/,/g')
+fi
+}
+#
+serviceLoop ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "#######################"
+   /bin/echo "##### serviceLoop #####"
+   /bin/echo "#######################"
+   set -x
+fi
+#
+for procLine in `/bin/cat $parmFile`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $procLine
+   processLabel=$1
+   overrideHost=$5
+   bypassCheck=$7
+   IFS=" "
+   set -- $bypassCheck
+   bypassCheck=$1
+   bypassCheckArg=$2
+   IFS="$oldIFS"
+   if [ "$bypassCheck" = " " -o "$bypassCheck" = "" ]
+   then
+      bypassSw=No
+   else
+      /usr/bin/test -s ${homeDir}/${bypassCheck}
+      if [ $? -eq 0 ]
+      then
+         bypassSw=$(${homeDir}/${bypassCheck} ${bypassCheckArg})
+      else
+         bypassSw=No
+      fi
+   fi
+   case $bypassSw in
+      NO|No|no)
+         if [ "$overrideHost" != "" ]
+         then
+            nagiosHost=$overrideHost
+         fi
+         toNagios ;;
+   esac
+done
+exit 0
+}
+#
+initializeServiceCapture ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "####################################"
+   /bin/echo "##### initializeServiceCapture #####"
+   /bin/echo "####################################"
+   set -x
+fi
+#
+initializeHostsFile=/tmp/nscaProcessCPU_initializeHosts
+/bin/cat /dev/null > $initializeHostsFile
+for parmLine in `/bin/cat ${parmFile}`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $parmLine
+   nagiosHostOverride=$5
+   bypassCheck=$7
+   IFS=" "
+   set -- $bypassCheck
+   bypassCheck=$1
+   bypassCheckArg=$2
+   IFS="$oldIFS"
+   if [ "$bypassCheck" = " " -o "$bypassCheck" = "" ]
+   then
+      bypassSw=No
+   else
+      /usr/bin/test -s ${homeDir}/${bypassCheck}
+      if [ $? -eq 0 ]
+      then
+         bypassSw=$(${homeDir}/${bypassCheck} ${bypassCheckArg})
+      else
+         bypassSw=No
+      fi
+   fi
+   case $bypassSw in
+      NO|No|no)
+         if [ "$nagiosHostOverride" = "" ]
+         then
+            nagiosHostOverride=$saveNagiosHost
+         fi
+         hostOverrideArg="|${nagiosHostOverride}|"
+         /bin/grep "$hostOverrideArg" $initializeHostsFile > /dev/null
+         if [ $? -ne 0 ]
+         then
+            /bin/echo "$hostOverrideArg" >> $initializeHostsFile
+            nagiosHost=$nagiosHostOverride
+            capturedSvc="ACCUMULATE START"
+            toNagios
+            /bin/sleep 2
+         fi ;;
+   esac
+done
+/bin/sleep 10
+}
+#
+noBypass ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### noBypass #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+if [ "$overrideHost" != "" ]
+then
+   nagiosHost=$overrideHost
+fi
+if [ "$serviceGroup" = "" ]
+then
+   serviceGroup=APPNAME
+fi
+perfData=Yes
+perfDataCheck
+setupThresholds
+if [ "$processString2" = "" -o "$processString2" = " " ]
+then
+   processCPU=$(/bin/ps -eo pcpu,cmd | /bin/grep "$processString" | /bin/grep -v grep | ${awk} '{print $1}')
+else
+   processCPU=$(/bin/ps -eo pcpu,cmd | /bin/grep "$processString" | /bin/grep "$processString2" | /bin/grep -v grep | ${awk} '{print $1}')
+fi
+SSE=$(/bin/date '+%s')
+if [ "$processCPU" = "" ]
+then
+   nagiosMsg="Process ${processString} CPU value is null"
+   exitCode=1
+   toNagios
+else
+   processCPUHold=$(/bin/echo ${processCPU} | /bin/sed 's/[0-9,\.]//g')
+   if [ "$processCPUHold" != "" ]
+   then
+      nagiosMsg="Process ${processString} CPU value is not numeric"
+      exitCode=1
+      toNagios
+   fi
+fi
+if [ $exitCode -eq 0 ]
+then
+   processCPU=$(/bin/echo ${processCPU} ${procNum} | ${awk} '{printf "%3.3f",($1/$2)}' | /bin/sed 's/ //g')
+   exitCode=0
+   checkThresholds
+   if [ $perfData = Yes ]
+   then
+      nagiosMsg="ProcessCPU%=${processCPU}${threshDisplay} | SSE=${SSE} ProcessCPU%=${processCPU}"
+   else
+      nagiosMsg="ProcessCPU%=${processCPU}${threshDisplay}"
+   fi
+   toNagios
+fi
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+debugSw=no
+IFS="
+"
+tries=1
+#
+# Process input arguments (one is required for the interface name of interest)
+for inputArg in $1 $2 $3
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+   displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo "##### Top of mainline #####"
+         debugSw=yes
+         set -x
+      else
+         /bin/echo "$inputArg" | /bin/grep -i "tries=" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            oldIFS="$IFS"
+            IFS="="
+            set -- $inputArg
+            tries=$2
+            IFS="$oldIFS"
+#           Is the tries value numeric?
+            triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+            if [ "$triesHold" != "" ]
+            then
+#              The tries value is not numeric, default to 1
+               tries=1
+            fi
+         fi
+      fi
+   fi
+done  
+#
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaProcessCPU_lastStatus
+#
+# Determine path for the send_nsca and send_nsca.cfg modules, if any
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the Nagios target host
+# from ${homeDir}/Nagios_hostname.dta, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+saveNagiosHost=$nagiosHost
+#
+exitCode=0
+tab="	"
+#
+serviceSetup=No
+#
+parmFile=${homeDir}/processCPU.dta
+/usr/bin/test -s ${homeDir}/processCPU.dta
+if [ $? -eq 0 ]
+then
+#  The required input parameter file does exist with a non-zero size
+   savedParms=/tmp/nscaProcessCPU_parmsSaved
+   workParms=/tmp/nscaProcessCPU_parmsWork
+#  We are only interested in changes to particular fields
+   /bin/cat $parmFile | /bin/cut -f1,2,4,5 -d"|" > $workParms
+   /usr/bin/test -s $savedParms
+   if [ $? -eq 0 ]
+   then
+#     There is a saved copy of the parameter file, is it different from the
+#     current version?
+      /usr/bin/diff $workParms $savedParms > /dev/null
+      if [ $? -ne 0 ]
+      then
+#        The current and saved parameters are not the same, save the current
+#        parameters and trigger Nagios service setup
+         serviceSetup=Yes
+         /bin/cat $workParms > $savedParms
+      fi
+   else
+#     There is not a saved copy of the parameter file; save it and trigger
+#     Nagios service setup
+      serviceSetup=Yes
+      /bin/cat $workParms > $savedParms
+   fi
+else
+#  The required parameter file is null or absent, exit
+   /bin/echo "required parm file ${parmFile} is absent or null, exiting" > $lastStatus
+   exit 1
+fi
+#
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   nagiosMsg="StopAllMonitoring file encountered, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+   serviceLoop
+fi
+#
+processCount=$(/bin/ps -ef | /bin/grep nscaProcessCPU | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $processCount -gt 3 ]
+then
+   nagiosMsg="prior execution  not completed, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+   serviceLoop
+fi
+#
+# Has the number of Nagios check attempts changed?
+savedTries=/tmp/nscaProcessCPU_tries_saved
+/usr/bin/test -s $savedTries
+if [ $? -eq 0 ]
+then
+   read savedTriesData < $savedTries
+   if [ "$tries" != "$savedTriesData" ]
+   then
+#     The number of check attempts has changed
+      serviceSetup=Yes
+      /bin/echo "$tries" > $savedTries
+   fi
+else
+   /bin/echo "$tries" > $savedTries
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_ProcessCPU
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   serviceSetup=Yes
+   initializeServiceCapture
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+procNumFile=${homeDir}/nscaProcessCPU_processorCount
+/usr/bin/test -s $procNumFile
+if [ $? -eq 0 ]
+then
+   read procNum < $procNumFile
+else
+   procNum=$(/bin/cat /proc/cpuinfo 2>/dev/null | /bin/grep processor | /usr/bin/wc -l | /bin/sed 's/ //g')
+   /bin/echo $procNum > $procNumFile
+fi
+#
+for processLine in `/bin/cat $parmFile`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $processLine
+   processLabel=$1
+   processString=$2
+   processString2=$3
+   argString=$4
+   overrideHost=$5
+   serviceGroup=$6
+   bypassCheck=$7
+   IFS=" "
+   set -- $bypassCheck
+   bypassCheck=$1
+   bypassCheckArg=$2
+   IFS="$oldIFS"
+   if [ "$bypassCheck" = " " -o "$bypassCheck" = "" ]
+   then
+      bypassSw=No
+   else
+      /usr/bin/test -s ${homeDir}/${bypassCheck}
+      if [ $? -eq 0 ]
+      then
+         bypassSw=$(${homeDir}/${bypassCheck} ${bypassCheckArg})
+      else
+         bypassSw=No
+      fi
+   fi
+   case $bypassSw in
+      NO|No|no) noBypass ;;
+   esac
+done
+#
+if [ $serviceSetup = Yes ]
+then
+   for hostArg in `/bin/cat $initializeHostsFile`
+   do
+      nagiosHost=$(/bin/echo ${hostArg} | /bin/sed 's/|//g')
+      capturedSvc="ACCUMULATE STOP"
+      /bin/sleep 2
+      toNagios
+   done
+   /bin/sleep 10
+#   toNagios
+fi
+#
