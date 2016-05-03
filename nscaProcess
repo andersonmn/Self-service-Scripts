@@ -1,0 +1,1133 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Change Log:"
+/bin/echo "----------:"
+/bin/echo "2015/11/03: allow for two space-separated values to be supplied"
+/bin/echo "            in the bypass check field, the first value will be"
+/bin/echo "            the routine name to be executed; the second, optional"
+/bin/echo "            value will be an argument passed to the routine"
+/bin/echo ""
+/bin/echo "2015/10/20: use single input parameter file named process.dta"
+/bin/echo "            rather than multiple input files named appName_procs.dta"
+/bin/echo ""
+/bin/echo "Script nscaProcess information and usage:"
+/bin/echo "-----------------------------------------"
+/bin/echo " 1. monitors process availability for Linux systems only"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or in /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. execution requires presence of at least one parm file named"
+/bin/echo "    \"process.dta\" in the executing user's home directory"
+/bin/echo "    (The supplied appName can be any descriptive label; it is"
+/bin/echo "    not validated against any object in Nagios)"
+/bin/echo " 5. each parameter file line consists of 10 pipe-delimited fields:"
+/bin/echo "       severity code - REQUIRED"
+/bin/echo "                       \"w\" or \"c\", warning (email) or critical"
+/bin/echo "                       (alert)"
+/bin/echo "    process string 1 - REQUIRED"
+/bin/echo "                       string to look for in the process list"
+/bin/echo "    process string 2 - additional string to look for in the process"
+/bin/echo "                       list (for cases in which one wants to find"
+/bin/echo "                       a process containing two specified strings)"
+/bin/echo "         valid count - to check for a particular process count;"
+/bin/echo "                       this must be used with \"operator\""
+/bin/echo "                       (next) to specify how the count is used"
+/bin/echo "            operator - must be present when \"valid count\" is"
+/bin/echo "                       specified; valid values are:"
+/bin/echo "                       -eq, -ge, -gt, -le, -lt, -ne"
+/bin/echo "                       Example: if the count is 2 and the operator"
+/bin/echo "                       is -ge, then the process(es) is/are OK"
+/bin/echo "                       if at least two processes are found, else"
+/bin/echo "                       a warning or critical state results"
+/bin/echo "        bypass check - if used, this value must be the name of a"
+/bin/echo "                       routine in the executing user's home"
+/bin/echo "                       directory used to determine whether or not"
+/bin/echo "                       this particular process check (for string 1,"
+/bin/echo "                       and string 2, if present) should be"
+/bin/echo "                       bypassed; the routine must \"echo\" out"
+/bin/echo "                       a value of YES, Yes, or yes (to bypass the"
+/bin/echo "                       check, or NO, No, or no (to execute the"
+/bin/echo "                       checkin - for example:"
+/bin/echo "                       if a process should always be running except"
+/bin/echo "                       when something else is running (like a"
+/bin/echo "                       cold backup), then a bypass check routine"
+/bin/echo "                       could be used to determine if that"
+/bin/echo "                       \"something else\" is running or not; if so"
+/bin/echo "                       the routine can output a \"yes\" (to bypass"
+/bin/echo "                       the check) or \"no\" to NOT bypass and do"
+/bin/echo "                       the check"
+/bin/echo "   hostname override - specify a value here if the target hostname"
+/bin/echo "                       in Nagios is different then the actual local"
+/bin/echo "                       hostname - for example, process checking"
+/bin/echo "                       run on host \"eidosed2\" maps its results"
+/bin/echo "                       to Nagios host \"meth01-tomcat\" by using"
+/bin/echo "                       this field"
+/bin/echo "        support code - specify a value here if notification should"
+/bin/echo "                       be routed to an on-call support role other"
+/bin/echo "                       than the default support role for this host -"
+/bin/echo "                       please contact the monitoring administrator"
+/bin/echo "                       about valid support code options"
+/bin/echo "               tries - specify a value here if a process problem"
+/bin/echo "                       must be detected n number of \"tries\" before"
+/bin/echo "                       an alert is triggered (a blank or absent"
+/bin/echo "                       \"tries\" field defaults to a value of \"1\")"
+/bin/echo "             appName - REQUIRED"
+/bin/echo "                       name supplied in related notifications to"
+/bin/echo "                       further describe an application or function"
+/bin/echo "                       with which the process is associated"
+/bin/echo "                       (the supplied appName can be any descriptive"
+/bin/echo "                       label; it is not validated against any object"
+/bin/echo "                       in Nagios)"
+/bin/echo " 6. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 7. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 8. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo " 9. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_Process\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to process-monitoring parameter"
+/bin/echo "    input)"
+/bin/echo "10. if expected execution results are not observed, check the"
+/bin/echo "    contents of the \"nscaProcess_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "##### toNagios #####"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   targetHost=$nagiosHost
+#  Nagios services must not contain equal signs
+   svcEntity=$(/bin/echo ${process1} | /bin/sed 's/=/ /g')
+#  Remove any trailing spaces from "svcEntity"
+   trim_string=${svcEntity##*[!${2:- }]}
+   svcEntity=${svcEntity%"$trim_string"}
+   nagiosSvc="Process Availability: ${svcEntity}"
+   if [ "$alertType" = "ProcAvailNagios" ]
+   then
+      nagiosMsg=${nagiosString}
+   else
+      nagiosMsg=$(/bin/echo ${nagiosString} | /bin/sed 's/~/@/g')
+   fi
+else
+#  Nagios service setup triggered with this script execution (first time)
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="Process Availability: ${process1}"
+   fi
+   nagiosMsg="Process@${nagiosHost}@${nagiosHostType}@APPNAME@${capturedSvc}@1@@"
+   capturedSvc=""
+fi
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ "$debugSw" = "no" ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+bypassErrorMsgBody ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### bypassErrorMsgBody ###"
+fi
+#
+/bin/echo "The nscaProcess script invoked execution of another routine" > $nscaProcessErrors
+/bin/echo "which failed to produce valid output." >> $nscaProcessErrors
+/bin/echo " " >> $nscaProcessErrors
+/bin/echo "in directory ${homeDir}." >> $nscaProcessErrors
+/bin/echo " " >> $nscaProcessErrors
+/bin/echo "The problem script is called $bypassCheck" >> $nscaProcessErrors
+/bin/echo "and it resides in directory ${homeDir}." >> $nscaProcessErrors
+/bin/echo " " >> $nscaProcessErrors
+/bin/echo "The script should produce a value of \"no\" or \"yes\"" >> $nscaProcessErrors
+/bin/echo "in file /tmp/nscaProcess_bypass." >> $nscaProcessErrors
+}
+#
+badBypassOutput ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### badBypassOutput ###"
+fi
+#
+bypassErrorMsgBody
+/bin/echo "The value produced was: $bypass_sw" >> $nscaProcessErrors
+}
+#
+nullBypassOutput ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### nullBypassOutput ###"
+fi
+#
+bypassErrorMsgBody
+/bin/echo "The output file was empty." >> $nscaProcessErrors
+}
+#
+noBypassOutput ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### noBypassOutput ###"
+fi
+#
+bypassErrorMsgBody
+/bin/echo "The output file was not created." >> $nscaProcessErrors
+}
+#
+noBypassRoutine ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### noBypassRoutine ###"
+fi
+#
+/bin/echo "The nscaProcess script reads parm file(s) which may name" >  $nscaProcessErrors
+/bin/echo "routines to be executed to determine if a given process" >>  $nscaProcessErrors
+/bin/echo "check should be bypassed.  This parm file is $appFile" >>  $nscaProcessErrors
+/bin/echo "in directory ${homeDir}. The routine," >>  $nscaProcessErrors
+/bin/echo "$bypassCheck, does not exist in directory ${homeDir}." >>  $nscaProcessErrors
+}
+#
+bypassRtnProbMsg ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### bypassRtnProbMsg ###"
+fi
+#
+# Establish the current status value depending on the type of bypass error
+case $bypass_prob_sw in
+   1)   badBypassOutput
+        ;;
+   2)   nullBypassOutput
+        ;;
+   3)   noBypassOutput
+        ;;
+   4)   noBypassRoutine
+        ;;
+esac
+#
+/bin/cat $nscaProcessErrors > $lastStatus
+exit 0
+}
+#
+retrieveParmFields ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### retrieveParmFields ###"
+fi
+#
+oldIFS="$IFS"
+IFS="|"
+set -- $line
+severity=$1
+process1=$2
+process2=$3
+validCount=$4
+countOperator=$5
+bypassCheck=$6
+nagiosHostOverride=$7
+supportCode=$8
+tries=$9
+appName=${10}
+IFS=" "
+set -- $bypassCheck
+bypassCheck=$1
+bypassCheckArg=$2
+IFS="$oldIFS"
+#
+psAlias="${process1}${process2}"
+psAlias=$(/bin/echo ${psAlias} | /bin/sed 's/\//-/g' | /bin/sed 's/ //g')
+#
+case $severity in
+   c|C|crit|Crit|CRIT) severityLevel=Crit ;;
+   w|W|warn|Warn|WARN) severityLevel=Warn ;;
+     *) severityLevel=Crit ;;
+esac
+#
+if [ "$supportCode" = "" ]
+then
+   supportCode=occLookup
+fi
+#
+if [ "$validCount" != "" ]
+then
+   validCountHold=$(/bin/echo ${validCount} | /bin/sed 's/[0-9]//g')
+   if [ "$validCountHold" != "" ]
+   then
+      /bin/echo "validCount field contains non-numeric value (\"${validCount}\"), exiting" > $lastStatus
+      exit 0
+   else
+      case $countOperator in
+         -eq|-ge|-gt|-le|-lt|-ne) continue ;;
+         *) /bin/echo "countOperator field contains invalid value (\"${countOperator}\"), exiting" > $lastStatus
+            exit 0 ;;
+      esac
+   fi
+fi
+#
+if [ "$nagiosHostOverride" = "" ]
+then
+   nagiosHost=$saveNagiosHost
+else
+   nagiosHost=$nagiosHostOverride
+fi
+mailFlag=${homeDir}/AppProcChkMail_${appName}_${psAlias}
+procFlag=${homeDir}/AppProcChkAlert_${appName}_${psAlias}
+probCountSave=${homeDir}/AppProcChkProbCount_${appName}_${psAlias}
+}
+#
+rmMailFlagFile ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### rmMailFlagFile ###"
+fi
+#
+/usr/bin/test -f $mailFlag
+if [ $? -eq 0 ]
+then
+   if [ "$process2" = "" ]
+   then
+      nagiosMsg="$appName process \"$process1\" is now okay"
+   else
+      nagiosMsg="$appName process with \"$process1\" and \"$process2\" is now okay"
+   fi
+   alertType=ProcAvailMail
+   nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~$process1~$supportCode~clear~$nagiosMsg~"
+   toNagios
+   /bin/rm $mailFlag
+fi
+}
+#
+evaluateAlertFlag ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### evaluateAlertFlag ###"
+fi
+#
+# Check to see if the flag file in question (flagName) exists.
+# Set a switch accordingly.
+# Set the default flag-file-found condition; "no" for not found
+flagExistence=no
+flag_change=no
+# If the flag file exists with a size greater than zero, it must be of the 
+# "proc" type, and the contents describe the proc problem
+/usr/bin/test -f ${flagName}
+if [ $? -eq 0 ]
+then
+   flagExistence=yes
+   read lastProbType < $flagName
+   if [ "$lastProbType" != "$probType" ]
+   then
+#     The current proc problem is not the same as the last
+      flag_change=yes
+   fi
+fi
+#
+}
+#
+checkTries ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### checkTries ###"
+fi
+#
+if [ "$tries" = "" -o "$tries" = "1" ]
+then
+#  The "tries" parameter is blank or one, so only one occurrence of the problem
+#  is enough to trigger alert posting
+   toNagios
+else
+#  The "tries" parameter is neither blank nor one, is it numeric?
+   triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+   if [ "$triesHold" = "" ]
+   then
+#     The "tries" parameter is numeric (and greater than one)
+      /usr/bin/test -s $probCountSave
+      if [ $? -ne 0 ]
+      then
+#        The problem count has not yet been saved, this must be the first
+#        occurence ("try"), save the problem count but don't trigger an alert
+#        since "1" is less than whatever the "tries" value is
+         /bin/echo "1" > $probCountSave
+      else
+#        A non-null saved problem count exists, retrieve it
+         read probCount < $probCountSave
+         savedProbsHold=$(/bin/echo ${probCount} | /bin/sed 's/[0-9]//g')
+         if [ "$savedProbsHold" = "" ]
+         then
+#           The saved problem count is indeed numeric, increment it
+            ((probCount = probCount + 1))
+            if [ $probCount -ge $tries ]
+            then
+#              The current problem count is at least equal to the "tries" 
+#              value so an alert must be triggered
+               toNagios
+            fi
+#           Save the current problem count
+            /bin/echo $probCount > $probCountSave
+         else
+#           The saved problem count is not numeric, set it to "1"
+            /bin/echo "1" > $probCountSave
+         fi
+      fi
+   fi
+fi
+}
+#
+takeAction ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### takeAction ###"
+fi
+#
+if [ "$curr_status" = "Not_Running" ]
+then
+   if [ "$process2" = "" ]
+   then
+      msgFrag="$appName problem, process \"$process1\" is not running"
+   else
+      msgFrag="$appName problem, process with \"$process1\" and \"$process2\" is not running"
+   fi
+   probType=down
+else
+   probType=count$ps_count
+   if [ $ps_count -eq 1 ]
+   then
+      verb=is
+      noun=process
+   else
+      verb=are
+      noun=processes
+   fi
+   if [ "$process2" = "" ]
+   then
+      msgFrag="$appName problem, $ps_count \"$process1\" $noun $verb running, should be ${adjective} $validCount"
+   else
+      msgFrag="$appName problem, $ps_count $noun with \"$process1\" and \"$process2\" $verb running, should be ${adjective} $validCount"
+   fi
+fi
+if [ "$severityLevel" = "Warn" ]
+then
+   exitCode=1
+   alertType=ProcAvailMail
+#  Send mail and create flag file
+   /bin/echo $curr_status > $mailFlag
+   if [ "$process2" = "" ]
+   then
+      nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~$process1~$supportCode~warn~$msgFrag~"
+   else
+      nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~${process1}_${process2}~$supportCode~warn~$msgFrag~"
+   fi
+   checkTries
+else
+   exitCode=2
+   alertType=ProcAvailCrit
+   flagName=$procFlag
+   evaluateAlertFlag
+   nagiosMsg="$msgFrag"
+   if [ "$process2" = "" ]
+   then
+      nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~${process1}~$supportCode~$nagiosMsg~"
+   else
+      nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~${process1}_${process2}~$supportCode~$nagiosMsg~"
+   fi
+   checkTries
+   if [ $flagExistence = no -o $flag_change = yes ]
+   then
+#     The alert has not been posted, OR
+#     the proc problem-type has changed, so create the flag file
+      flagName=$procFlag
+      /bin/echo $probType > $flagName
+   fi
+fi
+}
+#
+evaluateMailFlag ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### evaluateMailFlag ###"
+fi
+#
+read last_status < $mailFlag
+# Compare the current status to the former status
+if [ "$last_status" != "$curr_status" ]
+then
+#  The last problem was not the same as this, so we must see if there is a
+#  problem with bypass routine
+   if [ $bypass_prob_sw -eq 0 ]
+   then
+#     There is not a problem with a bypass routine, so we'll take action
+      takeAction
+   else
+#     There is a problem with a bypass routine, save status, send email
+      /bin/echo $curr_status > $mailFlag
+      bypassRtnProbMsg
+   fi
+else
+#  The last problem was the same as this; if the parm says that the action is
+#  "alert" and there is not a bypass routing problem, we will take action to
+#  post another alert, otherwise the parm action is "email" and we do not
+#  want to send more email
+   if [ "$severityLevel" = "Crit" ]
+   then
+      if [ $bypass_prob_sw -eq 0 ]
+      then
+         takeAction
+      fi
+   fi
+fi
+}
+#
+bypassRoutineProblem ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### bypassRoutineProblem ###"
+fi
+#
+# Establish the current status value depending on the type of bypass error
+case $bypass_prob_sw in
+   1)   curr_status=Invalid_Output
+        ;;
+   2)   curr_status=Output_Size_Zero
+        ;;
+   3)   curr_status=No_Output
+        ;;
+   4)   curr_status=No_Such_Routine
+        ;;
+esac
+#
+/usr/bin/test -f $mailFlag
+if [ $? -ne 0 ]
+then
+#  A flag file does not exist, create one with the current status, send email
+   /bin/echo $curr_status > $mailFlag
+   bypassRtnProbMsg
+else 
+#  A flag file exists and must be evaluated
+   evaluateMailFlag
+fi
+}
+#
+evalAlertReverse ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### evalAlertReverse ###"
+fi
+#
+flagName=$procFlag
+probType=none
+evaluateAlertFlag
+if [ $flagExistence = yes ]
+then
+   alertType=ProcAvailOkay
+#  There was an alert posted earlier for the process, so we will send a message
+#  to Patrol in order to "reverse" (close) it
+   if [ "$process2" = "" ]
+   then
+      nagiosMsg="$appName process \"$process1\" is now OK"
+      nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~$process1~$nagiosMsg~$supportCode~"
+   else
+      nagiosMsg="$appName process with \"$process1\" and \"$process2\" is now OK"
+      nagiosString="$alertType~$locName~$nagiosHost~$appName~$psAlias~${process1}_${process2}~$nagiosMsg~$supportCode~"
+   fi
+   toNagios
+   /usr/bin/test -f $procFlag
+   if [ $? -eq 0 ]
+   then
+      /bin/rm $procFlag
+   fi
+   /usr/bin/test -f $probCountSave
+   if [ $? -eq 0 ]
+   then
+      /bin/rm $probCountSave
+   fi
+else
+   if [ $nagiosUpdateEligible = Yes ]
+   then
+      alertType=ProcAvailNagios
+      if [ "$process2" = "" ]
+      then
+         nagiosString="${appName} process \"${process1}\" found"
+#         nagiosMsg="${appName} process \"${process1}\" found"
+#         nagiosString="${alertType}~${locName}~${nagiosHost}~${appName}~${psAlias}~${process1}~${nagiosMsg}~${supportCode}~"
+      else
+         nagiosString="${appName} process with \"${process1}\" and \"${process2}\" found"
+#         nagiosMsg="${appName} process with \"${process1}\" and \"${process2}\" found"
+#         nagiosString="${alertType}~${locName}~${nagiosHost}~${appName}~${psAlias}~${process1}_${process2}~${nagiosMsg}~${supportCode}~"
+      fi
+      toNagios
+   fi
+fi
+}
+#
+checkProcess ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### checkProcess ###"
+fi
+#
+exitCode=0
+#
+if [ $bypass_sw = no ]
+then
+#  See if the process name can be found in a file of active processes
+   processFound=No
+   if [ "$process2" = "" ]
+   then
+      /bin/grep "$process1" $processList > /tmp/ps_hold
+      if [ $? -eq 0 ]
+      then
+         processFound=Yes
+      fi
+   else
+      /bin/grep "$process1" $processList | /bin/grep "$process2" > /tmp/ps_hold
+      if [ $? -eq 0 ]
+      then
+         processFound=Yes
+      fi
+   fi
+   if [ $processFound = Yes ]
+   then
+      if [ "$validCount" = " " -o "$validCount" = "" ]
+      then
+#        The "count" parm field is blank or null, so we don't care how many
+#        of these processes are running; we'll remove the "process mail flag
+#        file" if it exists and send an "alert reverse" to Patrol if an alert
+#        was posted for this process.
+         rmMailFlagFile
+         evalAlertReverse
+      else
+#        Get the count of these running processes
+         ps_count=$(/bin/cat /tmp/ps_hold | /usr/bin/wc -l | /bin/sed 's/ //g')
+         if [ $ps_count $countOperator $validCount ]
+         then
+#           The process is OK, so remove mailFlag file for it
+#           if there is one, and check to see if an alert has to be
+#           reversed
+            rmMailFlagFile
+            evalAlertReverse
+         else
+#           The process count is wrong
+            case $countOperator in
+               -eq) curr_status="Not_Equal"
+                    adjective="exactly" ;;
+               -ge) curr_status="Not_Enough"
+                    adjective="at least" ;;
+               -gt) curr_status="Not_Enough"
+                    adjective="more than" ;;
+               -le) curr_status="Too_Many"
+                    adjective="at most" ;;
+               -lt) curr_status="Too_Many"
+                    adjective="less than" ;;
+               -ne) curr_status="Wrong_Count"
+                    adjective="unequal to" ;;
+            esac
+            /usr/bin/test -f $mailFlag
+            if [ $? -ne 0 ]
+            then
+#              The "mail flag file" does not exist so we must take action.
+               takeAction
+            else
+#              The "mail flag file" does exist, so we must evaluate it.
+               evaluateMailFlag
+            fi
+         fi
+      fi
+   else
+      curr_status="Not_Running"
+#     The process is not active, so check for presence of the flag file
+      /usr/bin/test -f $mailFlag
+      if [ $? -ne 0 ]
+      then
+#        The mail flag file does not exist, so we must take action.
+         takeAction
+      else
+#        The mail flag file does exist and we must evaluate it.
+         evaluateMailFlag
+      fi
+   fi
+else
+#  A bypass check routine told us to ignore this process, but just in case a
+#  flag file exists for it we should remove it.
+   rmMailFlagFile
+fi
+}
+#
+processAppFile ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### processAppFile ###"
+fi
+#
+sortParms=/tmp/nscaProcess_sortedProcessParms
+sortApps=/tmp/nscaProcess_sortedAppParms
+bypassChecks_done=/tmp/nscaProcess_bypassChecks_done
+/bin/cat /dev/null > $bypassChecks_done
+bypass_errors=/tmp/nscaProcess_bypass_errors
+/bin/cat /dev/null > $bypass_errors
+nscaProcessErrors=/tmp/nscaProcess_parm_errors
+/bin/cat /dev/null > $nscaProcessErrors
+#
+# Sort the parameter file by bypass_check_routine field
+$sort -t"|" -k 6,6 $appFilePath > $sortApps
+#
+for line in `/bin/cat $sortApps`
+do
+   bypass_prob_sw=0
+#  Get parm values into variables
+   retrieveParmFields
+   if [ "$bypassCheck" = " " -o "$bypassCheck" = "" ]
+   then
+#     There is no bypass check routine named so we must check on this process
+      bypass_sw=no
+      checkProcess
+   else
+#     There is a bypass check routine named and we must evaluate it
+#     to see if it's already been executed
+      /bin/grep "${bypassCheck} ${bypassCheckArg}" $bypassChecks_done > /dev/null
+      if [ $? -eq 0 ]
+      then
+#        This bypassCheck routine has already been executed and we don't
+#        need to do it again
+         checkProcess
+      else
+#        This bypass routine has not been successfully executed yet.  Is it one
+#        that has been found to be in error? If so, bypass and get next parm.
+         /bin/grep "${bypassCheck} ${bypassCheckArg}" $bypass_errors > /dev/null
+         if [ $? -ne 0 ]
+         then
+#           We didn't execute this routine yet, and it hasn't already been found
+#           to be in error
+#           Now we'll test to see if this routine exists where it's supposed to
+            /usr/bin/test -s ${homeDir}/$bypassCheck
+            if [ $? -eq 0 ]
+            then
+#              The routine exists, execute it
+               bypass_sw=$(${homeDir}/${bypassCheck} ${bypassCheckArg})
+               case $bypass_sw in
+                  YES|Yes|yes)
+#                    The variable's value is valid
+                     /bin/echo "${bypassCheck} ${bypassCheckArg}" >> $bypassChecks_done
+                     bypass_sw=yes
+                     checkProcess ;;
+                  NO|No|no)
+#                    The variable's value is valid
+                     /bin/echo "${bypassCheck} ${bypassCheckArg}" >> $bypassChecks_done
+                     bypass_sw=no
+                     checkProcess ;;
+                  *)
+#                    The variable's value is not valid,
+#                    execute an error routine.
+                     /bin/echo "${bypassCheck} ${bypassCheckArg}" >> $bypass_errors
+                     bypass_prob_sw=1
+                     bypassRoutineProblem ;;
+               esac
+            else
+#              The bypass routine does not exist, execute an error routine
+               /bin/echo "${bypassCheck} ${bypassCheckArg}" >> $bypass_errors
+               bypass_prob_sw=4
+               bypassRoutineProblem
+            fi
+         fi
+      fi
+   fi
+done
+#
+}
+#
+initializeServiceCapture ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### initializeServiceCapture ###"
+fi
+#
+IFS="
+"
+initializeHostsFile=/tmp/nscaProcess_initializeHosts
+/bin/cat /dev/null > $initializeHostsFile
+for parmLine in `/bin/cat ${parmFile}`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $parmLine
+   bypassCheck=$6
+   nagiosHostOverride=$7
+   IFS=" "
+   set -- $bypassCheck
+   bypassCheck=$1
+   bypassCheckArg=$2
+   IFS="$oldIFS"
+   if [ "$bypassCheck" = "" ]
+   then
+      bypass_sw=No
+   else
+      bypass_sw=$(${homeDir}/${bypassCheck} ${bypassCheckArg})
+   fi
+   case $bypass_sw in
+      NO|No|no)
+         if [ "$nagiosHostOverride" = "" ]
+         then
+            nagiosHostOverride=$saveNagiosHost
+         fi
+         hostOverrideArg="|${nagiosHostOverride}|"
+         /bin/grep "$hostOverrideArg" $initializeHostsFile > /dev/null
+         if [ $? -ne 0 ]
+         then
+            /bin/echo "$hostOverrideArg" >> $initializeHostsFile
+            nagiosHost=$nagiosHostOverride
+            capturedSvc="ACCUMULATE START"
+            toNagios
+            /bin/sleep 2
+         fi ;;
+   esac
+done
+/bin/sleep 10
+}
+#
+reduceParms ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   set -x ; /bin/echo "### reduceParms ###"
+fi
+#
+/bin/cat /dev/null > $parmFileReduced
+for parmLine in `/bin/cat $parmFile`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $parmLine
+   process1=$2
+   nagiosHostOverride=$7
+   IFS="$oldIFS"
+   reducedLine="${process1}|${nagiosHostOverride}|"
+   /bin/echo "$reducedLine" >> $parmFileReduced
+done
+}
+#
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+/usr/bin/test -f /bin/sort
+if [ $? -eq 0 ]
+then
+   sort=/bin/sort
+else
+   sort=/usr/bin/sort
+fi
+#
+if [ "$1" != "" ]
+then
+   /bin/echo "$1" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+      displayDocumentation
+   else
+      /bin/echo "$1" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo " ##### Top of Mainline #####"
+         debugSw=yes
+         set -x
+      else
+         debugSw=no
+      fi
+   fi
+else
+   debugSw=no
+fi
+#
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   exit 0
+fi
+#
+# Determine the path to the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+#
+# Capture the name to use as the target host in Nagios
+# from the ${homeDir}/Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+saveNagiosHost=$nagiosHost
+#
+lastStatus=${homeDir}/nscaProcess_lastStatus
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 0
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+tab="	"
+exitCode=0
+#
+runCount=$(/bin/ps -ef | /bin/grep nscaProcess | /bin/grep -v grep | /bin/grep -v nscaProcessCPU | /bin/grep -v nscaProcessMemory | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $runCount -gt 4 ]
+then
+   /bin/echo "script backlog, nscaProcess exiting, runCount: $runCount" > $lastStatus
+   exit 0
+fi
+#
+lastUpdateFile=${homeDir}/lastUpdateProcesses
+#
+serviceSetup=No
+#
+parmFile=${homeDir}/process.dta
+#
+IFS="
+"
+#
+# Convert old parameter file(s) to new format with first execution of this
+# new script version
+/usr/bin/test -s $parmFile
+if [ $? -ne 0 ]
+then
+   /bin/cat /dev/null > $parmFile
+   for oldParmFile in `ls ${homeDir} | /bin/grep _procs.dta`
+   do
+      trailChars=$(/bin/echo ${oldParmFile} | /bin/sed 's/procs.dta//g' | /bin/cut -f2 -d"_")
+      if [ "$trailChars" = "" ]
+      then
+         oldIFS="$IFS"
+         IFS="_"
+         set -- $oldParmFile
+         appName=$1
+         IFS="$oldIFS"
+         for oldParmLine in `/bin/cat ${homeDir}/${oldParmFile}`
+         do
+            oldIFS="$IFS"
+            IFS="|"
+            set -- $oldParmLine
+            severity=$1
+            process1=$2
+            process2=$3
+            validCount=$4
+            countOperator=$5
+            bypassCheck=$6
+            nagiosHostOverride=$7
+            supportCode=$8
+            tries=$9
+            IFS="$oldIFS"
+            newParmLine="${severity}|${process1}|${process2}|${validCount}|${countOperator}|${bypassCheck}|${nagiosHostOverride}|${supportCode}|${tries}|${appName}|"
+            /bin/echo "$newParmLine" >> $parmFile
+         done
+      fi
+   done
+   exit 0
+fi
+#
+# Has there been a change to the process-monitoring parms?
+savedProcs=/tmp/nscaProcess_procSaved_newerVersion
+parmFileReduced=/tmp/nscaProcess_procParms_Reduced
+reduceParms
+/usr/bin/test -f $savedProcs
+if [ $? -eq 0 ]
+then
+   /usr/bin/diff $savedProcs $parmFileReduced > /dev/null
+   if [ $? -ne 0 ]
+   then
+#     The process-monitoring parms have changed
+      serviceSetup=Yes
+      /bin/cat $parmFileReduced > $savedProcs
+   fi
+else
+   /bin/cat $parmFileReduced > $savedProcs
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_Process
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   serviceSetup=Yes
+   /bin/touch $serviceSetupFlag
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -f $lastUpdateFile
+   if [ $? -eq 0 ]
+   then
+      /bin/rm $lastUpdateFile
+   fi
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   serviceSetup=Yes
+   initializeServiceCapture
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+locName=locLookup
+#
+nagiosUpdateEligible=No
+currSSE=$(/bin/date '+%s')
+/usr/bin/test -s $lastUpdateFile
+if [ $? -ne 0 ]
+then
+   /bin/echo $currSSE > $lastUpdateFile
+   nagiosUpdateEligible=Yes
+else
+   read lastUpdateSSE < $lastUpdateFile
+   ((elapsedSinceUpdate = currSSE - lastUpdateSSE))
+#   if [ $elapsedSinceUpdate -ge 4200 ]
+   if [ $elapsedSinceUpdate -ge 10 ]
+   then
+      /bin/echo $currSSE > $lastUpdateFile
+      nagiosUpdateEligible=Yes
+   fi
+fi
+#
+# Capture process list for this server in a file
+processList=/tmp/nscaProcess_processList
+/bin/ps -ef > $processList
+#
+sortedParms=/tmp/nscaProcess_sortedProcessParms
+$sort -t"|" -k 10,10 $parmFile > $sortedParms
+#
+# Loop through and process the appName_procs.dta files in the home directory
+lastAppName=X
+firstTime=Yes
+for parmLine in `/bin/cat ${sortedParms}`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $parmLine
+   parmAppName=${10}
+   IFS="$oldIFS"
+   if [ $firstTime = No ]
+   then
+      if [ $parmAppName = $lastAppName ]
+      then
+         /bin/echo $parmLine >> $appFilePath
+      else
+         processAppFile
+         lastAppName=$parmAppName
+         appFilePath=/tmp/nscaProcess_processParms_${parmAppName}
+         /bin/echo $parmLine > $appFilePath
+      fi
+   else
+      lastAppName=$parmAppName
+      firstTime=No
+      appFilePath=/tmp/nscaProcess_processParms_${parmAppName}
+      /bin/echo $parmLine > $appFilePath
+   fi
+done
+processAppFile
+#
+/bin/echo "processing completed normally" > $lastStatus
+#
+if [ $serviceSetup = Yes ]
+then
+   for hostArg in `/bin/cat $initializeHostsFile`
+   do
+      nagiosHost=$(/bin/echo ${hostArg} | /bin/sed 's/|//g')
+      capturedSvc="ACCUMULATE STOP"
+      /bin/sleep 2
+      toNagios
+   done
+   /bin/sleep 10
+fi
+#
