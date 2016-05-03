@@ -1,0 +1,186 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaHostDate information and usage:"
+/bin/echo "------------------------------------------"
+/bin/echo " 1. this script is written for use only with systems which"
+/bin/echo "    can run the \"date '+%s'\" command and are compatible"
+/bin/echo "    with NSCA use (typically Linux only)"
+/bin/echo " 2. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 3. captures host seconds-since-epoch value which is sent to"
+/bin/echo "    Nagios via NSCA"
+/bin/echo " 4. the NSCA string is sent to the \"Host Date Capture\" service"
+/bin/echo "    under Nagios host represented in the nscaTarget.dta file if"
+/bin/echo "    present, else to monitor1"
+/bin/echo " 5. the NSCA string service message consists of the local hostname"
+/bin/echo "    and seconds-since-epoch value"
+/bin/echo " 6. the NSCA string return code is set mandatorily to \"1\" -"
+/bin/echo "    this must be done to force the target service into a warning"
+/bin/echo "    state so that the \"serviceEvent\" event handler is executed"
+/bin/echo " 7. the Nagios \"serviceEvent\" event handler captures the"
+/bin/echo "    hostname and epoch value in the service message and creates"
+/bin/echo "    file /tmp/hostname.Seconds containing the epoch value"
+/bin/echo " 8. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo " 9. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_HostDate\" file"
+/bin/echo "    from the executing user's home directory"
+/bin/echo "10. if expected execution results are not observed, check contents"
+/bin/echo "    of the \"nscaHostDate_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+# Format an NSCA-compatible string and send it to Nagios via NSCA
+nscaPkt="${nscaTarget}${tab}${nagiosSvc}${tab}1${tab}${nagiosMsg}"
+if [ $debugSw = no ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   echo "$nscaPkt"
+fi
+/bin/echo "processing completed normally" > $lastStatus
+exit 0
+}
+#
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+debugSw=no
+#
+# Process input arguments, if any
+for inputArg in $1 $2
+do
+   case $inputArg in
+           *) /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+              if [ $? -eq 0 ]
+              then
+                 displayDocumentation
+              else
+                 /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+                 if [ $? -eq 0 ]
+                 then
+                    /bin/echo "##### Top of mainline #####"
+                    debugSw=yes
+                    set -x
+                 fi
+              fi ;;
+   esac
+done
+#
+# Determine path for the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaHostDate_lastStatus
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaFound=Yes
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the Nagios host target
+# from the Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read hostName < ${homeDir}/Nagios_hostname.dta
+else
+   hostName=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+exitCode=1
+tab="	"
+#
+# Trigger auto-deployment of Nagios service
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_HostDate
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   /bin/touch $serviceSetupFlag
+   nagiosSvc="Service Setup Capture"
+   nagiosMsg="HostDate@${hostName}@${nagiosHostType}@APPNAME@Time File@1@"
+   exitCode=1
+   toNagios
+fi
+#
+nagiosSvc="Host Date Capture"
+#
+# Capture the system seconds-since-epoch value
+SSE=$(/bin/date '+%s')
+#
+# Format the message to send to Nagios
+nagiosMsg="${hostName} ${SSE}"
+#
+toNagios
