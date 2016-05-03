@@ -1,0 +1,487 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaIO information and usage:"
+/bin/echo "------------------------------------"
+/bin/echo " 1. captures iostat metrics for Linux systems only"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. accepts argument consisting of comma-delimited device names"
+/bin/echo "    for which to collect iostat metrics - if no device-string"
+/bin/echo "    argument is supplied, metrics are retrieved for all devices"
+/bin/echo "    Examples:  sda"
+/bin/echo "               sda,dm-0"
+/bin/echo " 5. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 6. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 7. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo " 8. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_Iostat\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to the list of monitored"
+/bin/echo "    interfaces or a to the \"tries\" parameter)"
+/bin/echo " 9. if expected execution results are not observed, check contents"
+/bin/echo "    of the \"nscaIO_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   targetHost=$nagiosHost
+   nagiosSvc="Iostat Metrics: ${device}"
+else
+#  Nagios service setup triggered with this execution (first time)
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="Iostat Metrics: ${device}"
+   fi
+   nagiosMsg="Iostat@${nagiosHost}@${nagiosHostType}@APPNAME@${capturedSvc}@1@"
+   capturedSvc=""
+fi
+# Format an NSCA-compatible string and send to Nagios via NSCA
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ $debugSw = no ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+processLabelMetricPair ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "##################################"
+   /bin/echo "##### processLabelMetricPair #####"
+   /bin/echo "##################################"
+   set -x
+fi
+#
+if [ "$metric" != "" ]
+then
+   metricClause="${column}=${metric}"
+   metricString="${metricString}${metricClause} "
+fi
+}
+#
+getDetailValues ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### getDetailValues #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+oldIFS="$IFS"
+IFS=" "
+set -- $detailLine
+detail1=$1
+detail2=$2
+detail3=$3
+detail4=$4
+detail5=$5
+detail6=$6
+detail7=$7
+detail8=$8
+detail9=$9
+detail10=${10}
+detail11=${11}
+detail12=${12}
+detail13=${13}
+detail14=${14}
+detail15=${15}
+IFS="$oldIFS"
+}
+#
+getColumnHeadings ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "#############################"
+   /bin/echo "##### getColumnHeadings #####"
+   /bin/echo "#############################"
+   set -x
+fi
+#
+oldIFS="$IFS"
+IFS=" "
+set -- $headingLine
+column1=$1
+column2=$2
+column3=$3
+column4=$4
+column5=$5
+column6=$6
+column7=$7
+column8=$8
+column9=$9
+column10=${10}
+column11=${11}
+column12=${12}
+column13=${13}
+column14=${14}
+column15=${15}
+IFS="$oldIFS"
+}
+#
+processOutput ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "#########################"
+   /bin/echo "##### processOutput #####"
+   /bin/echo "#########################"
+   set -x
+fi
+#
+# "iostat" is executed with a "count" of 2; therefore there will be two
+# column-heading lines and two detail lines (or two sets of detail lines if
+# metrics for multiple devices are retrieved) - the first heading/detail lines
+# are metrics since last reboot and we don't want to process those; the second
+# heading/detail lines are for the interval specified with the iostat command,
+# and it is this seconds set the script will process.
+if [ $labelsRetrieved = No ]
+then
+#  Retrieve the second heading line, turn double-spaces into single-spaces,
+#  and turn slashes into underscores - the column headings other than "Device:"
+#  are used as metric labels which will be passed to Nagios and Graphite,
+#  Graphite creates folder-breaks when it encounters slashes in its input data
+#  so we want to remove slashes from the labels
+   headingLine=$(/bin/grep Device: ${workFile} | /usr/bin/tail -n 1 | /bin/sed 's/  / /g' | /bin/sed 's/\//_/g')
+   getColumnHeadings
+   labelsRetrieved=Yes
+fi
+#
+# Get the line number of the second column-heading line
+detailLineNbr=$(/bin/grep -n Device: ${workFile} | $cut -f1 -d: | /usr/bin/tail -n 1)
+totalLines=$(/bin/cat ${workFile} | /usr/bin/wc -l | /bin/sed 's/ //g')
+#
+brokenLine=No
+# Process lines following the second column-heading line
+while [ $detailLineNbr -le $totalLines ]
+do
+   ((neededLineNbr = totalLines - detailLineNbr))
+   detailLine=$(/usr/bin/tail -n ${neededLineNbr} ${workFile} | /usr/bin/head -n 1 | /bin/sed 's/  / /g')
+   if [ $brokenLine = Yes ]
+   then
+#     The previous line contained only the device name, therefore the current
+#     line will contain only metrics; prepend the metrics with the device name
+#     to make it look like a "normal" unbroken line
+      detailLine="${device} ${detailLine}"
+      brokenLine=No
+   fi
+   if [ "$detailLine" != "" ]
+   then
+      getDetailValues
+      if [ "$detail2" = "" ]
+      then
+#        The line contains only a device name, therefore the next line will 
+#        contain only the metrics; save the device name and set the "broken"
+#        switch to "Yes" (the device name may contain a slash, change it to
+#        an underscore)
+         brokenLine=Yes
+         device=$(/bin/echo ${detail1} | /bin/sed 's/\//_/g')
+      else
+         detailFieldCount=1
+         metricString=""
+         while [ $detailFieldCount -le 15 ]
+         do
+            case $detailFieldCount in
+                1) metric=""
+                   device=$(/bin/echo ${detail1} | /bin/sed 's/\//_/g') ;;
+#                  If the device name contains a slash, change it to "_"
+                2) column=$column2
+                   metric=$detail2 ;;
+                3) column=$column3
+                   metric=$detail3 ;;
+                4) column=$column4
+                   metric=$detail4 ;;
+                5) column=$column5
+                   metric=$detail5 ;;
+                6) column=$column6
+                   metric=$detail6 ;;
+                7) column=$column7
+                   metric=$detail7 ;;
+                8) column=$column8
+                   metric=$detail8 ;;
+                9) column=$column9
+                   metric=$detail9 ;;
+               10) column=$column10
+                   metric=$detail10 ;;
+               11) column=$column11
+                   metric=$detail11 ;;
+               12) column=$column12
+                   metric=$detail12 ;;
+               13) column=$column13
+                   metric=$detail13 ;;
+               14) column=$column14
+                   metric=$detail14 ;;
+               15) column=$column15
+                   metric=$detail15 ;;
+            esac
+            processLabelMetricPair
+            ((detailFieldCount = detailFieldCount + 1))
+         done
+#        Get the length of metricString
+         metricStringLength=${#metricString}
+#        metricString has a trailing space, let's remove it
+         ((newLength = metricStringLength - 1))
+         metricString=$(/bin/echo ${metricString} | $cut -c1-${newLength})
+         nagiosMsg="${metricString} | SSE=${SSE} ${metricString}"
+         toNagios
+      fi
+   fi
+   ((detailLineNbr = detailLineNbr + 1))
+done
+#
+/bin/echo "processing completed normally" > $lastStatus
+}
+#
+processSelectDevices ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "################################"
+   /bin/echo "##### processSelectDevices #####"
+   /bin/echo "################################"
+   set -x
+fi
+#
+# Get iostat metrics for each device in the input argument's comma-delimited
+# string
+device=X
+deviceHold=""
+deviceCount=0
+while [ "$device" != "" ]
+do
+   ((deviceCount = deviceCount + 1))
+   device=$(/bin/echo ${deviceString} | $cut -f$deviceCount -d",")
+   if [ "$device" != "$deviceHold" ]
+   then
+      if [ "$device" != "" ]
+      then
+         deviceHold=$device
+         /usr/bin/iostat -x 3 2 $device > $workFile
+         processOutput
+      fi
+   fi
+done
+}
+#
+# Determine path to "cut" command; it's not consistent among Linux variants
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+IFS=" "
+debugSw=no
+deviceString="ALL"
+#
+# Process input arguments (one is required for the interface name of interest)
+for inputArg in $1 $2 $3
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+   displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo "##### Top of mainline #####"
+         debugSw=yes
+         set -x
+      else
+         deviceString=$inputArg
+      fi
+   fi
+done
+#
+# Determine path for the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaIO_lastStatus
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+# If file nscaTarget.dta exists in the home directory and is not null, use
+# this value as the NSCA target; else use "monitor1.wpprivate.com" - the value
+# in nscaTarget.dta should be the IP address for a server hosting Nagios
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the Nagios target host
+# from the Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+exitCode=0
+tab="	"
+#
+serviceSetup=No
+#
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   nagiosMsg="StopAllMonitoring file encountered, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+   exit 1
+fi
+#
+processCount=$(/bin/ps -ef | /bin/grep nscaIO | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $processCount -gt 3 ]
+then
+   nagiosMsg="prior execution not completed, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+   exit 1
+fi
+#
+# Has the list of monitored devices changed?
+savedDevices=/tmp/nscaIO_deviceString_saved
+/usr/bin/test -s $savedDevices
+if [ $? -eq 0 ]
+then
+   read savedDeviceData < $savedDevices
+   if [ "$deviceString" != "$savedDeviceData" ]
+   then
+      serviceSetup=Yes
+      /bin/echo "$deviceString" > $savedDevices
+   fi
+else
+   /bin/echo "$deviceString" > $savedDevices
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_Iostat
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios services
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   serviceSetup=Yes
+   capturedSvc="ACCUMULATE START"
+   toNagios
+   /bin/sleep 10
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+IFS="
+"
+#
+# Capture iostat metrics
+workFile=/tmp/nscaIO_output
+labelsRetrieved=No
+SSE=$(/bin/date '+%s')
+if [ "$deviceString" = "ALL" ]
+then
+   /usr/bin/iostat -x 3 2 > $workFile
+   processOutput
+else
+   processSelectDevices
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+   capturedSvc="ACCUMULATE STOP"
+   /bin/sleep 10
+   toNagios
+fi
+#
