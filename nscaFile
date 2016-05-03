@@ -1,0 +1,670 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaFile information and usage:"
+/bin/echo "--------------------------------------"
+/bin/echo " 1. monitors file age (with the \"stat -c %Z\" command) and size"
+/bin/echo "    (with \"ls -l\") and absence duration for Linux systems only"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or in /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. execution requires presence one parm file named \"files.dta\""
+/bin/echo "    in the executing user's home directory,"
+/bin/echo " 5. each parameter file line consists of 4 pipe-delimited fields:"
+/bin/echo "           file path  - the file's full path -"
+/bin/echo "           ---------    if the path of interest contains date/time"
+/bin/echo "                        values, variables may be specified to cause"
+/bin/echo "                        substitution of system date/time values in"
+/bin/echo "                        place of the variables; available variables"
+/bin/echo "                        are:"
+/bin/echo "    minuteVar          (minute of the hour, 0-59)"
+/bin/echo "    minute0Var         (minute of the hour, 00-59)"
+/bin/echo "    hourVar            (hour of the day, 0-23)"
+/bin/echo "    hour0Var           (hour of the day, 00-23)"
+/bin/echo "    dayVar             (day of the month, 1-31)"
+/bin/echo "    day0Var            (day of the month, 01-31)"
+/bin/echo "    daybVar            (day of the month, 1-31 with leading space for 1-9)"
+/bin/echo "    monthVar           (month number, 1-12)"
+/bin/echo "    month0Var          (month number, 01-12)"
+/bin/echo "    yearVar            (ccyy)"
+/bin/echo "    shortYearVar       (yy)"
+/bin/echo "    weekdayNameVar     (abbreviated weekday name)"
+/bin/echo "    fullWeekdayNameVar (full weekday name)"
+/bin/echo "    monthNameVar       (abbreviated month name)"
+/bin/echo "    fullMonthNameVar   (full month name)"
+/bin/echo "    ticksVar           (seconds since epoch)"
+/bin/echo "               Example (logfile named with today's date in CCYYMMDD format)"
+/bin/echo "                       /local/logFiles/dailyLog.yearVarmonth0Varday0Var"
+/bin/echo "          thresholds  - if supplied, a comma-delimited string which"
+/bin/echo "          ----------    may specify threshold values"
+/bin/echo "                        Valid threshold parameter options:"
+/bin/echo "                           bytesSizeWarn  bytesSizeCrit"
+/bin/echo "                           minsAbsentWarn minsAbsentCrit"
+/bin/echo "                           minsOldWarn    minsOldCrit"
+/bin/echo "                           noPerfData (no Nagios performance data)"
+/bin/echo "                                      (i.e., no data to Graphite)"
+/bin/echo "                        Examples:"
+/bin/echo "                           minsOldWarn=30"
+/bin/echo "                           bytesSizeCrit=1000000"
+/bin/echo "                           bytesSizeWarn=5000000,minsOldCrit=120"
+/bin/echo "                           minsOldCrit=300,noPerfData"
+/bin/echo "    hostname override - if the target Nagios host is something other"
+/bin/echo "    -----------------   than the local hostname, supply the target"
+/bin/echo "                        Nagios host value here"
+/bin/echo "         servicegroup - the desired Nagios \"servicegroup\""
+/bin/echo "         ------------   association for this process - if blank"
+/bin/echo "                        or invalid (not known to Nagios), the"
+/bin/echo "                        default servicegroup assocation for this"
+/bin/echo "                        host will be used"
+/bin/echo " 6. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 7. accepts \"tries=n\" argument (case insensitive) to be used"
+/bin/echo "    as the \"max_check_attempts\" value in the auto-deployed"
+/bin/echo "    Nagios service (if not supplied, default is 1)"
+/bin/echo "    Explanation - if there are warning and/or critical thresholds"
+/bin/echo "    in effect for this monitor, and if the warning/critical action"
+/bin/echo "    (email/alert) should occur immediately upon a threshold being"
+/bin/echo "    met/exceeded, then don't supply this argument, or supply"
+/bin/echo "    \"tries=1\". However, if you want a threshold-met/exceeded"
+/bin/echo "    condition to persist for some duration before action is taken,"
+/bin/echo "    then use this argument to define the desired duration."
+/bin/echo "    The \"duration\" is actually the number of consecutive times"
+/bin/echo "    the Nagios service must be set to a WARNING or CRITICAL state"
+/bin/echo "    in order to trigger an action. For example, if this script"
+/bin/echo "    is run every five minutes and a non-OKAY condition must"
+/bin/echo "    persist for ten minutes before notification takes place,"
+/bin/echo "    then use \"tries=3\":"
+/bin/echo "    a. problem state onset occurs - Nagios check attempts=1"
+/bin/echo "    b. 5 minutes later, problem state persists - check attempts=2"
+/bin/echo "    c. 5 minutes later, problem state persists - check attempts=3,"
+/bin/echo "       action (email/alert) is triggered"
+/bin/echo " 8. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 9. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo "    (also see \"hostname override\" above)"
+/bin/echo "10. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_File\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to directory-monitoring parameter"
+/bin/echo "    input)"
+/bin/echo "11. if expected execution results are not observed, check the"
+/bin/echo "    contents of the \"nscaFile_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+dateVarSubstitution ()
+{
+dateVals=$(/bin/date '+%a|%A|%b|%B|%d|%e|%H|%k|%m|%M|%s|%y|%Y|')
+#
+dateVarString="hourVar minuteVar monthVar dayVar yearVar shortYearVar weekdayNameVar fullWeekdayNameVar hour0Var minute0Var day0Var month0Var monthNameVar fullMonthNameVar ticksVar"
+#
+oldIFS="$IFS"
+IFS=" "
+for dateVar in $dateVarString
+do
+   /bin/echo $pathWork | /bin/grep $dateVar > /dev/null
+   if [ $? -eq 0 ]
+   then
+      case $dateVar in
+         hourVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f8 -d"|" | /bin/sed 's/ //g') ;;
+         minuteVar)
+            minLeadZero=$(/bin/echo ${dateVals} | $cut -f10 -d"|")
+            if [ $minLeadZero -lt 10 ]
+            then
+               dateVal=$(/bin/echo ${minLeadZero} | $cut -c2)
+            fi ;;
+         monthVar)
+            monthLeadZero=$(/bin/echo ${dateVals} | $cut -f9 -d"|")
+            if [ $monthLeadZero -lt 10 ]
+            then
+               dateVal=$(/bin/echo ${monthLeadZero} | $cut -c2)
+            fi ;;
+         dayVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f6 -d"|" | /bin/sed 's/ //g') ;;
+         yearVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f13 -d"|") ;;
+         shortYearVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f12 -d"|") ;;
+         weekdayNameVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f1 -d"|") ;;
+         fullWeekdayNameVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f2 -d"|") ;;
+         hour0Var)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f7 -d"|") ;;
+         minute0Var)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f10 -d"|") ;;
+         day0Var)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f5 -d"|") ;;
+         month0Var)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f9 -d"|") ;;
+         monthNameVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f3 -d"|") ;;
+         fullMonthNameVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f4 -d"|") ;;
+         ticksVar)
+            dateVal=$(/bin/echo ${dateVals} | $cut -f11 -d"|") ;;
+      esac
+      pathWork=$(/bin/echo ${pathWork} | /bin/sed "s/$dateVar/$dateVal/g")
+   fi
+done
+IFS="$oldIFS"
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "##### toNagios #####"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   targetHost=$nagiosHost
+   nagiosSvc="File: ${filePath}"
+else
+#  Nagios service setup triggered with this script execution (first time)
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="File: ${filePath}"
+   fi
+   nagiosMsg="File@${nagiosHost}@${nagiosHostType}@${serviceGroup}@${capturedSvc}@${tries}@@"
+   capturedSvc=""
+fi
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ "$debugSw" = "no" ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+thresholdCheckTwo ()
+{
+exitCode=0
+for thresholdType in minsOldWarn bytesSizeWarn minsOldCrit bytesSizeCrit
+do
+   case $thresholdType in
+      minsOldWarn)   threshold=$minsOldWarnThresh
+                     metric=$minsOld
+                     statCode=1 ;;
+      bytesSizeWarn) threshold=$bytesSizeWarnThresh
+                     metric=$bytesSize
+                     statCode=1 ;;
+      minsOldCrit)   threshold=$minsOldCritThresh
+                     metric=$minsOld
+                     statCode=2 ;;
+      bytesSizeCrit) threshold=$bytesSizeCritThresh
+                     metric=$bytesSize
+                     statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $metric -ge $threshold ]
+      then
+         exitCode=$statCode
+      fi
+   fi
+done
+}
+#
+thresholdCheckOne ()
+{
+# Check if the elapsed time exceeds a threshold and set the exitCode as needed
+#
+exitCode=0
+for thresholdType in minsAbsentWarn minsAbsentCrit
+do
+   case $thresholdType in
+      minsAbsentWarn) threshold=$minsAbsentWarnThresh
+                      statCode=1 ;;
+      minsAbsentCrit) threshold=$minsAbsentCritThresh
+                      statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $minDiff -ge $threshold ]
+      then
+         exitCode=$statCode
+      fi
+   fi
+done
+}
+#
+perfDataCheck ()
+{
+/bin/echo $threshInput | /bin/grep noPerfData > /dev/null
+if [ $? -eq 0 ]
+then
+   perfData=No
+   threshInput=$(/bin/echo ${threshInput} | /bin/sed 's/noPerfData//g' | /bin/sed 's/,,/,/g')
+fi
+}
+#
+setupThresholds ()
+{
+minsAbsentWarnThresh=X
+minsAbsentCritThresh=X
+minsOldWarnThresh=X
+minsOldCritThresh=X
+bytesSizeWarnThresh=X
+bytesSizeCritThresh=X
+oldIFS="$IFS"
+IFS=" "
+threshInput=$(/bin/echo ${threshInput} | /bin/sed 's/,/ /g')
+for argNum in $threshInput
+do
+   argType=$(/bin/echo ${argNum} | $cut -f1 -d"=")
+   case $argType in
+      minsAbsentCrit) minsAbsentCritThresh=$(/bin/echo ${argNum} | $cut -f2 -d"=") ;;
+      minsAbsentWarn) minsAbsentWarnThresh=$(/bin/echo ${argNum} | $cut -f2 -d"=") ;;
+         minsOldCrit) minsOldCritThresh=$(/bin/echo ${argNum} | $cut -f2 -d"=") ;;
+         minsOldWarn) minsOldWarnThresh=$(/bin/echo ${argNum} | $cut -f2 -d"=") ;;
+       bytesSizeCrit) bytesSizeCritThresh=$(/bin/echo ${argNum} | $cut -f2 -d"=") ;;
+       bytesSizeWarn) bytesSizeWarnThresh=$(/bin/echo ${argNum} | $cut -f2 -d"=") ;;
+   esac
+done
+#
+if [ "$threshInput" != "" ]
+then
+   threshDisp=$(/bin/echo ${threshInput} | /bin/sed 's/ /,/g')
+   threshDisp=", thresholds: ${threshDisp}"
+else
+   threshDisp=""
+fi
+IFS="$oldIFS"
+}
+#
+existenceRoutine ()
+{
+moddedPath=$(/bin/echo ${filePath} | /bin/sed 's/\//-/g')
+flagFile=${homeDir}/nscaFile_${moddedPath}
+if [ $fileExists = Yes ]
+then
+#  The file exists
+   /usr/bin/test -f $flagFile
+   if [ $? -eq 0 ]
+   then
+#     The previous check found the file not to exist and a flagfile was
+#     created, now we can remove the flagfile
+      /bin/rm $flagFile
+   fi
+else
+#  The file does not exist
+   if [ "$minsAbsentCritThresh" = "X" -a "$minsAbsentWarnThresh" = "X" ]
+   then
+#     There are no thresholds provided related to file absence minutes
+#     so we'll set a "critical" code of 2
+      exitCode=2
+   else
+#     A "warning" and/or "critical" threshold exists related to file absence
+      /usr/bin/test -s $flagFile
+      if [ $? -eq 0 ]
+      then
+#        The SSE value at the time of file absence onset was stored and we 
+#        must calculated the elapsed minutes for comparison to threshold(s)
+         read absenceOnsetSSE < $flagFile
+         ((minDiff = (currSSE - absenceOnsetSSE) / 60))
+#        Check if the elapsed time exceeds a threshold and set the exitCode
+#        appropriately
+         thresholdCheckOne
+      else
+#        This is the initial detection of file absence so the current SSE value
+#        must be stored and we'll set an "okay" code (0).
+         exitCode=0
+         /bin/echo $currSSE > $flagFile
+      fi
+   fi
+#  Display the "file does not exist message" and exit with the appropriate
+#  return code
+   nagiosMsg="the file does not exist"
+   toNagios
+fi
+}
+#
+processPath ()
+{
+#
+pathWork=$filePath
+dateVarSubstitution
+currSSE=$(/bin/date '+%s')
+#
+perfData=Yes
+perfDataCheck
+setupThresholds
+#
+/usr/bin/test -f $pathWork
+if [ $? -eq 0 ]
+then
+   fileExists=Yes
+else
+   fileExists=No
+fi
+existenceRoutine
+#
+fileSSE=$(/usr/bin/stat -c %Z ${pathWork})
+if [ $currSSE -ge $fileSSE ]
+then
+   ((sseDiff = currSSE - fileSSE))
+   ((minsOld = sseDiff / 60))
+   ((seconds = sseDiff % 60))
+else
+   minsOld=0
+fi
+bytesSize=$(ls -l ${pathWork} | $awk '{print $5}')
+thresholdCheckTwo
+case $exitCode in
+   0) status=OK ;;
+   1) status=WARNING ;;
+   2) status=CRITICAL ;;
+esac
+msg="MinutesOld=${minsOld}, Bytes=${bytesSize}"
+if [ $perfData = Yes ]
+then
+   msg2=$(/bin/echo ${msg} | /bin/sed 's/,//g')
+   nagiosMsg="File ${status}: ${msg}${threshDisp} | twpFile ${status} ${msg2}"
+else
+   nagiosMsg="File ${status}: ${msg}${threshDisp}"
+fi
+toNagios
+}
+#
+initializeServiceCapture ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "####################################"
+   /bin/echo "##### initializeServiceCapture #####"
+   /bin/echo "####################################"
+   set -x
+fi
+#
+initializeHostsFile=/tmp/nscaFile_initializeHosts
+/bin/cat /dev/null > $initializeHostsFile
+for parmLine in `/bin/cat ${parmFile}`
+do
+   nagiosHostOverride=$(/bin/echo ${parmLine} | /bin/cut -f3 -d"|")
+   if [ "$nagiosHostOverride" = "" ]
+   then
+      nagiosHostOverride=$saveNagiosHost
+   fi
+   hostOverrideArg="|${nagiosHostOverride}|"
+   /bin/grep "$hostOverrideArg" $initializeHostsFile > /dev/null
+   if [ $? -ne 0 ]
+   then
+      /bin/echo "$hostOverrideArg" >> $initializeHostsFile
+      nagiosHost=$nagiosHostOverride
+      capturedSvc="ACCUMULATE START"
+      toNagios
+      /bin/sleep 2
+   fi
+done
+/bin/sleep 10
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+tries=1
+debugSw=no
+IFS="
+"
+#
+for inputArg in $1 $2 $3
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+      displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo " ##### Top of Mainline #####"
+         debugSw=yes
+         set -x
+      else
+         /bin/echo "$inputArg" | /bin/grep "tries=" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            oldIFS="$IFS"
+            IFS="="
+            set -- $inputArg
+            tries=$2
+            IFS="$oldIFS"
+            triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+            triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+            if [ "$triesHold" != "" ]
+            then
+#              The tries value is not numeric, default to 1
+               tries=1
+            fi
+         fi
+      fi
+   fi
+done
+#
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+#
+lastStatus=${homeDir}/nscaFile_lastStatus
+#
+# Determine the path to the send_nsca and send_nsca.cfg modules, if any
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 0
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the target host in Nagios
+# from the ${homeDir}/Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+saveNagiosHost=$nagiosHost
+#
+exitCode=0
+tab="	"
+#
+serviceSetup=No
+#
+parmFile=${homeDir}/files.dta
+/usr/bin/test -s $parmFile
+if [ $? -eq 0 ]
+then
+#  The required input parameter file does exist with a non-zero size
+   savedParms=/tmp/nscaFile_parmsSaved
+   /usr/bin/test -s $savedParms
+   if [ $? -eq 0 ]
+   then
+#     There is a saved copy of the parameter file, is it different from the
+#     current version?
+      /usr/bin/diff $parmFile $savedParms > /dev/null
+      if [ $? -ne 0 ]
+      then
+#        The current and saved parameters are not the same, save the current
+#        parameters and trigger Nagios service setup
+         serviceSetup=Yes
+         /bin/cat $parmFile > $savedParms
+      fi
+   else
+#     There is not a saved copy of the parameter file; save it and trigger
+#     Nagios service setup
+      serviceSetup=Yes
+      /bin/cat $parmFile > $savedParms
+   fi
+else
+#  The required parameter file is null or absent, exit
+   /bin/echo "required parm file ${parmFile} is absent or null, exiting" > $lastStatus
+   exit 1
+fi
+#
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   nagiosMsg="StopAllMonitoring file encountered, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+fi
+#
+runCount=$(/bin/ps -ef | /bin/grep nscaFile | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $runCount -gt 4 ]
+then
+   nagiosMsg="script backlog, nscaFile exiting, runCount: $runCount" > $lastStatus
+   /bin/echo "$nagiosMsg" > $lastStatus
+fi
+#
+# Has the number of Nagios check attempts changed?
+savedTries=/tmp/nscaFile_tries_saved
+/usr/bin/test -s $savedTries
+if [ $? -eq 0 ]
+then
+   read savedTriesData < $savedTries
+   if [ "$tries" != "$savedTriesData" ]
+   then
+#     The number of check attempts has changed
+      serviceSetup=Yes
+      /bin/echo "$tries" > $savedTries
+   fi
+else
+   /bin/echo "$tries" > $savedTries
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_File
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   serviceSetup=Yes
+   initializeServiceCapture
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+for parmLine in `/bin/cat $parmFile`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $parmLine
+   filePath=$1
+   threshInput=$2
+   overrideHost=$3
+   serviceGroup=$4
+   IFS="$oldIFS"
+   if [ "$overrideHost" != "" ]
+   then
+      nagiosHost=$overrideHost
+   fi
+   if [ "$serviceGroup" = "" ]
+   then
+      serviceGroup=APPNAME
+   fi
+   processPath
+done
+#
+if [ $serviceSetup = Yes ]
+then
+   nagiosHost=$saveNagiosHost
+   for hostArg in `/bin/cat $initializeHostsFile`
+   do
+      nagiosHost=$(/bin/echo ${hostArg} | /bin/sed 's/|//g')
+      capturedSvc="ACCUMULATE STOP"
+      toNagios
+      /bin/sleep 2
+   done
+   /bin/sleep 10
+fi
+#
+/bin/echo "processing completed normally" > $lastStatus
+#
