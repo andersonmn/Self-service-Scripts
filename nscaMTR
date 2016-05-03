@@ -1,0 +1,1524 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Change Log:"
+/bin/echo "----------:"
+/bin/echo "2015/12/15: allow for another argument to be passed to the script;"
+/bin/echo "            \"parmFile=fileName\", where \"fileName\" is the name"
+/bin/echo "            of an input parameter file other than \"MTR.dta\""
+/bin/echo "            (\"MTR.dta\" is the default parameter file name),"
+/bin/echo "            in order to enable the execution of multiple nscaMTR"
+/bin/echo "            scripts simultaneously (this would be desireable in"
+/bin/echo "            cases where so many mtr targets are needed that there"
+/bin/echo "            could be a risk that all the targets might not get"
+/bin/echo "            processed before the next cron-scheduled execution of"
+/bin/echo "            the script . . . in such a case one may want to put"
+/bin/echo "            half of the mtr targets in MTR.dta and the other half"
+/bin/echo "            in a file named something like MTR2.dta such that the"
+/bin/echo "            two nscaMTR scripts can run simultaneously using"
+/bin/echo "            different input parameter files . . . one could supply"
+/bin/echo "            the argument \"parmFile=MTR2.dta\" for one nscaMTR"
+/bin/echo "            script with another copy of the script not receiving the"
+/bin/echo "            \"parmFile=X\" argument)"
+/bin/echo "2015/12/13: allow for processing of additional \"interval=n\""
+/bin/echo "            parameter to force at least n seconds to elapse between"
+/bin/echo "            executions of mtr for a particular target"
+/bin/echo ""
+/bin/echo "Script nscaMTR information and usage:"
+/bin/echo "-------------------------------------"
+/bin/echo " 1. uses \"mtr\" and \"ping\" commands to collect and monitor timing"
+/bin/echo "    and packet-loss metrics for one or more source/target pairs"
+/bin/echo " 2. may run as \"root\", or if \"sudo\" access is granted to a"
+/bin/echo "    non-root user to execute \"mtr\", then that non-root user"
+/bin/echo "    may be used for execution"
+/bin/echo " 3. requires that an argument be provided to name the directory"
+/bin/echo "    in which to find the \"nsca\" binary and config files, the"
+/bin/echo "    required input parameter file, and in which to write the"
+/bin/echo "    \"NagiosServiceSetupTriggered\", lastStatus and log files"
+/bin/echo "    (more about these below) - this directory will be called"
+/bin/echo "    the \"workPath\""
+/bin/echo " 4. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 5. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     parm-supplied directory (\"workPath\") or in /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 6. if the workPath directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 7. an input parameter file named \"MTR.dta\" is assumed to be"
+/bin/echo "    present in the workPath directory if no \"parmFile=fileName\""
+/bin/echo "    argument is supplied, otherwise a file named \"fileName\" is"
+/bin/echo "    assumed to be in the workPath directory"
+/bin/echo " 8. each parameter file line consists of two pipe-delimited fields:"
+/bin/echo "      1) target - the target which mtr will \"ping\""
+/bin/echo "      2) target arguments - up to four arguments may be specified"
+/bin/echo "                         in any order:"
+/bin/echo "           thresholds - allowed thresholds are"
+/bin/echo ""
+/bin/echo "                        timeWarn=n  timeCrit=n"
+/bin/echo ""
+/bin/echo "                the \"time\" thresholds, if used, require a"
+/bin/echo "                numeric value (represented by the \"n\" above,"
+/bin/echo "                to set a milliseconds threshold)"
+/bin/echo ""
+/bin/echo "                        lossWarn    lossCrit"
+/bin/echo ""
+/bin/echo "                either lossWarn or lossCrit may be used, but not"
+/bin/echo "                both; if any percentage of loss is output from the"
+/bin/echo "                \"ping\" command, lossWarn results in a Warning"
+/bin/echo "                condition, lossCrit results in a Critical condition"
+/bin/echo ""
+/bin/echo "                        countWarn   countCrit"
+/bin/echo ""
+/bin/echo "                either countWarn or countCrit may be used, but not"
+/bin/echo "                both; if the count of hops has changed from the"
+/bin/echo "                last check, countWarn results in a Warning"
+/bin/echo "                condition, countCrit results in a Critical condition"
+/bin/echo "                BUT NOTE - A NON-OKAY CONDITION IS IMMEDIATE AND"
+/bin/echo "                NOT SUBJECTED TO THE \"tries\" TEST (see below)"
+/bin/echo "                FOR THESE ARGUMENTS!"
+/bin/echo ""
+/bin/echo "                        labelWarn   labelCrit"
+/bin/echo ""
+/bin/echo "                either labelWarn or labelCrit may be used, but not"
+/bin/echo "                both; if any hop address label has changed from the"
+/bin/echo "                last check, labelWarn results in a Warning"
+/bin/echo "                condition, labelCrit results in a Critical condition"
+/bin/echo "                BUT NOTE - A NON-OKAY CONDITION IS IMMEDIATE AND"
+/bin/echo "                NOT SUBJECTED TO THE \"tries\" TEST (see below)"
+/bin/echo "                FOR THESE ARGUMENTS!"
+/bin/echo ""
+/bin/echo "                up to five thresholds may be specified in a comma-"
+/bin/echo "                delimited string, in any order, such as:"
+/bin/echo ""
+/bin/echo "    e.g.   lossCrit,timeWarn=1000,timeCrit=5000,countWarn,labelCrit"
+/bin/echo ""
+/bin/echo "           lossTries=x  -AND/OR-  timeTries=x"
+/bin/echo "                     if used, the \"x\" value specifies either"
+/bin/echo "                     a) the number of times consecutively which a"
+/bin/echo "                     non-okay state must occur in order to trigger"
+/bin/echo "                     notification (email or alert) OR"
+/bin/echo "                     b) a \"yofz\" format, tranlated as \"y bad tries"
+/bin/echo "                     out of the last z attempts\" needed to trigger"
+/bin/echo "                     notification"
+/bin/echo "                     NOTE1: if one or both of these is/are absent,"
+/bin/echo "                     then related values of 1 are assumed"
+/bin/echo "                     NOTE2: \"xxxxTries\" HAS NO IMPACT FOR"
+/bin/echo "                     countWarn/countCrit/labelWarn/labelCrit"
+/bin/echo "                     ARGUMENTS; AFFECTS ONLY \"time\" AND \"loss\""
+/bin/echo "                     CHECKING!"
+/bin/echo "                     ALSO: \"tries=\" is no longer used; if present"
+/bin/echo "                     then a value of 1 is assumed"
+/bin/echo ""
+/bin/echo "           GenericHopLabels - supply this value if mtr to this"
+/bin/echo "                     target results in ever-varying hop labels"
+/bin/echo "                     (an example of a target which demonstrates this"
+/bin/echo "                     result is www.google.com)"
+/bin/echo ""
+/bin/echo "           NonZeroOK - use this argument if a non-OK return code"
+/bin/echo "                     from the mtr command should NOT cause a Nagios"
+/bin/echo "                     WARNING state - for some mtr targets a non-"
+/bin/echo "                     zero return code may occur intermittently and"
+/bin/echo "                     should not be considered abnormal"
+/bin/echo ""
+/bin/echo "           interval=n -  use where a value of n is used to force"
+/bin/echo "                     at least n seconds to elapse between mtr"
+/bin/echo "                     executions for a particular target (such that,"
+/bin/echo "                     even if the script is being executed every"
+/bin/echo "                     minute via cron, some target or targets can"
+/bin/echo "                     have mtr checking/metrics done for intervals"
+/bin/echo "                     longer than a minute"
+/bin/echo ""
+/bin/echo "      Here is a sample valid parameter file entry:"
+/bin/echo ""
+/bin/echo "      www.cnn.com|lossCrit,timeWarn=2000 lossTries=3 GenericHopLabels|"
+/bin/echo ""
+/bin/echo "      Another example:"
+/bin/echo ""
+/bin/echo "      www.cnn.com|lossWarn,timeCrit=2000 timeTries=4of7|"
+/bin/echo ""
+/bin/echo "      And another:"
+/bin/echo ""
+/bin/echo "      10.10.1.1|lossWarn,timeCrit=2000 lossTries=2 timeTries=4of7|"
+/bin/echo ""
+/bin/echo " 9. whenever a non-okay status due to a threshold condition being"
+/bin/echo "    met, even if the number of tries has not yet been met, output"
+/bin/echo "    from execution of mtr is written to a logfile which will reside"
+/bin/echo "    in workPath; the file is named \"MTR_problemLog.ccyymmdd\""
+/bin/echo "10. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp (see next item for exception)"
+/bin/echo "11. accepts \"NoStopCheck\" argument (value \"NoStopCheck\", case"
+/bin/echo "    insensitive) to continue execution even if a StopAllMonitoring"
+/bin/echo "    file is found"
+/bin/echo "12. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_MTR\" file"
+/bin/echo "    from the workPath directory (auto-deployment is also re-"
+/bin/echo "    triggered by a change to any targets in the MTR.dta, or"
+/bin/echo "    alternatively named, parameter file)"
+/bin/echo "13. if expected execution results are not observed, check the"
+/bin/echo "    contents of the \"nscaMTR_lastStatus\" file in the workPath"
+/bin/echo "    directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+   sleepValue=0
+   targetHost=$nagiosHost
+   nagiosSvc="MTR Statistics: ${mtrTarget}"
+   case $mtrSuccess in 
+          Yes) pdLength=${#perfData}
+               ((newLength = pdLength - 1))
+               perfData=$(/bin/echo ${perfData} | $cut -c1-${newLength})
+               nagiosMsg="${serviceMsg} | SSE=${SSE} ${perfData}" ;;
+           No) if [ $nonZeroOK = No ]
+               then
+                  nagiosStatus=1
+               else
+                  nagiosStatus=0
+               fi
+               nagiosMsg="mtr execution yielded non-zero return code" ;;
+   esac
+else
+   sleepValue=2
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   nagiosStatus=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="MTR Statistics: ${mtrTarget}"
+   fi
+   nagiosMsg="MTR@${nagiosHost}@${nagiosHostType}@Network@${capturedSvc}@1@@"
+   capturedSvc=""
+fi
+#
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${nagiosStatus}${tab}${nagiosMsg}"
+if [ "$debugSw" = "No" ]
+then
+#  Send the string to Nagios via NSCA
+  /bin/echo ${nscaPkt} | ${nscaBinaryPath} ${nscaTarget} -c ${nscaConfigPath} > /dev/null 2>&1
+   if [ $serviceSetup = Yes ]
+   then
+      /bin/sleep $sleepValue
+   fi
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+setupThresholds ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### setupThresholds #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+lossThreshold=No
+timeThreshold=No
+clauseCount=0
+threshClause=X
+lastClause=X
+while [ "$threshClause" != "" ]
+do
+   ((clauseCount = clauseCount + 1))
+   threshClause=$(/bin/echo ${threshString} | $cut -f${clauseCount} -d",")
+   if [ "$threshClause" != "" ]
+   then
+      if [ "$threshClause" != "$lastClause" ]
+      then
+         lastClause=$threshClause
+         oldIFS="$IFS"
+         IFS="="
+         set -- $threshClause
+         threshType=$1
+         threshValue=$2
+         case $threshType in
+             timeWarn) timeWarnThresh=$threshValue
+                       timeThreshold=Yes ;;
+             timeCrit) timeCritThresh=$threshValue
+                       timeThreshold=Yes ;;
+             lossWarn) lossWarnThresh=1
+                       lossThreshold=Yes
+                       failWarnThresh=2 ;;
+             lossCrit) lossCritThresh=1
+                       lossThreshold=Yes
+                       failCritThresh=2 ;;
+            countWarn) countWarnThresh=1 ;;
+            countCrit) countCritThresh=1 ;;
+            labelWarn) labelWarnThresh=1 ;;
+            labelCrit) labelCritThresh=1 ;;
+         esac
+         IFS="$oldIFS"
+      else
+         threshClause=""
+      fi
+   fi
+done
+}
+#
+serviceLoop ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "#######################"
+   /bin/echo "##### serviceLoop #####"
+   /bin/echo "#######################"
+   set -x
+fi
+#
+totalParmTargets=/tmp/nscaMTR_parmsCurrent_allParmFiles
+/bin/cat /dev/null > $totalParmTargets
+for currentParmTargets in `ls /tmp | /bin/grep nscaMTR_parmsCurrent`
+do
+   /bin/cat /tmp/${currentParmTargets} >> $totalParmTargets
+done
+for mtrTarget in `/bin/cat $totalParmTargets`
+do
+   toNagios
+done
+}
+#
+accumulateMailPackets ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "#################################"
+   /bin/echo "##### accumulateMailPackets #####"
+   /bin/echo "#################################"
+   set -x
+fi
+#
+mailPacket="${mailHost}${tab}${mailSvc}${tab}1${tab}${mailLine}"
+/bin/echo "$mailPacket" >> $mailPacketFile
+}
+#
+toNagiosForMail ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### toNagiosForMail #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+/usr/bin/test -s /bin/traceroute
+if [ $? -eq 0 ]
+then
+   /bin/cat /dev/null > $workFile2
+   /bin/traceroute $mtrTarget > $workFile2
+fi
+#
+mailUniqueID=$(/bin/echo $(( $RANDOM %10000 +1)))
+mailHost=$nscaTarget
+mailSvc="MTR Mail Capture"
+#
+mailLine="${mailUniqueID}@001!MTR error for ${nagiosHost} to ${mtrTarget} - ${errorString}"
+accumulateMailPackets
+mailLineCount=1
+for mtrOutput in `/bin/cat $workFile`
+do
+   ((mailLineCount = mailLineCount + 1))
+   if [ $mailLineCount -lt 10 ]
+   then
+      sequence="00${mailLineCount}"
+   else
+      sequence="0${mailLineCount}"
+   fi
+   mailLine="${mailUniqueID}@${sequence}!${mtrOutput}"
+   accumulateMailPackets
+done
+#
+/usr/bin/test -s $workFile2
+if [ $? -eq 0 ]
+then
+   mailLine="${mailUniqueID}@${sequence}!"
+   accumulateMailPackets
+   for trOutput in `/bin/cat $workFile2`
+   do
+      ((mailLineCount = mailLineCount + 1))
+      if [ $mailLineCount -lt 10 ]
+      then
+         sequence="00${mailLineCount}"
+      else
+         sequence="0${mailLineCount}"
+      fi
+      mailLine="${mailUniqueID}@${sequence}!${trOutput}"
+      accumulateMailPackets
+   done
+fi
+#
+mailLine="${mailUniqueID}@${sequence}!ACCUMULATE STOP"
+accumulateMailPackets
+/bin/cat $mailPacketFile | ${nscaBinaryPath} ${nscaTarget} -c ${nscaConfigPath} > /dev/null 2>&1
+}
+#
+checkMailEligibility ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "################################"
+   /bin/echo "##### checkMailEligibility #####"
+   /bin/echo "################################"
+   set -x
+fi
+#
+/bin/echo "$errorString" | /bin/grep -E "slow response|packet loss" > /dev/null
+if [ $? -eq 0 ]
+then
+   /usr/bin/test -s $savedLastSvcStatus
+   if [ $? -eq 0 ]
+   then
+      read lastSvcStatus < $savedLastSvcStatus
+      if [ $lastSvcStatus -eq 0 ]
+      then
+         toNagiosForMail
+      fi
+   fi
+fi
+}
+#
+writeLogEntry ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "#########################"
+   /bin/echo "##### writeLogEntry #####"
+   /bin/echo "#########################"
+   set -x
+fi
+#
+dateTimeString=$(/bin/date '+%C-%y-%m-%d-%H-%M-%S-')
+oldIFS="$IFS"
+IFS="-"
+set -- $dateTimeString
+logCent=$1
+logYear=$2
+logMon=$3
+logDay=$4
+logHour=$5
+logMin=$6
+logSec=$7
+IFS="$oldIFS"
+logDate="${logCent}${logYear}${logMon}${logDay}"
+logTime="${logHour}:${logMin}:${logSec}"
+logFile=${workPath}/MTR_problemLog.${logDate}
+/usr/bin/test -f $logFile
+if [ $? -ne 0 ]
+then
+   /bin/touch $logFile
+   /usr/bin/find ${workPath} -name "MTR_problemLog*" -mtime 7 -exec /bin/rm {} ';'
+fi
+/bin/echo "############" >> $logFile
+/bin/echo "# ${logTime} #     ${nagiosHost} to ${mtrTarget}" >> $logFile
+/bin/echo "############" >> $logFile
+/bin/echo "" >> $logFile
+/bin/echo "error msg(s): ${errorString}" >> $logFile
+if [ $hopCountChange = 1 -o $hopLabelChange = 1 ]
+then
+   /bin/echo "" >> $logFile
+   /bin/echo "previous list of hops:" >> $logFile
+   /bin/echo "----------------------" >> $logFile
+   /bin/echo "" >> $logFile
+   /bin/cat $hopSave >> $logFile
+fi
+/bin/echo "" >> $logFile
+/bin/echo "current mtr output:" >> $logFile
+/bin/echo "-------------------" >> $logFile
+/bin/echo "" >> $logFile
+/bin/cat $workFile >> $logFile
+/bin/echo "" >> $logFile
+#
+}
+#
+formatPerfData ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##########################"
+   /bin/echo "##### formatPerfData #####"
+   /bin/echo "##########################"
+   set -x
+fi
+#
+clause=X
+inClauseCount=0
+outClauseCount=0
+while [ "$clause" != "" ]
+do
+   ((inClauseCount = inClauseCount + 1))
+   ((outClauseCount = outClauseCount + 1))
+   clause=$(/bin/echo ${perfDataAccum} | $cut -f${inClauseCount} -d"|")
+   if [ "$clause" != "" ]
+   then
+      perfData="${perfData}${clause} "
+      if [ $outClauseCount -ge 10 ]
+      then
+         toNagios
+         perfData=""
+         outClauseCount=0
+      fi
+   else
+      if [ "$perfData" != "" ]
+      then
+         toNagios
+         autoDeployEnabled=No
+      fi
+   fi
+done
+#
+if [ $currStatus -gt 0 -o $hopCountChange -eq 1 -o $hopLabelChange -eq 1 ]
+then
+   writeLogEntry
+fi
+#
+}
+#
+setServiceMsg ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "#########################"
+   /bin/echo "##### setServiceMsg #####"
+   /bin/echo "#########################"
+   set -x
+fi
+#
+if [ "$errorString" = "" ]
+then
+   serviceMsg="to Graphite"
+else
+   thresholdsUsedString="${lossThreshold}${timeThreshold}"
+   case $thresholdsUsedString in
+      YesYes)
+         serviceMsg="${errorString}, thresholds: ${threshString},lossTries=${lossTriesCount}of${lossTriesRange},timeTries=${timeTriesCount}of${timeTriesRange}" ;;
+       YesNo)
+         serviceMsg="${errorString}, thresholds: ${threshString},tries=${lossTriesCount}of${lossTriesRange}" ;;
+       NoYes)
+         serviceMsg="${errorString}, thresholds: ${threshString},tries=${timeTriesCount}of${timeTriesRange}" ;;
+   esac
+   if [ $nagiosStatus -gt 0 ]
+   then
+      checkMailEligibility
+   fi
+fi
+#
+if [ $totalLines -gt 1 ]
+then
+   formatPerfData
+else
+   toNagios
+fi
+}
+#
+evaluateTriesHist ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "#############################"
+   /bin/echo "##### evaluateTriesHist #####"
+   /bin/echo "#############################"
+   set -x
+fi
+#
+# This routine gets executed twice, once for the Loss history file and once for
+# the Time history file.
+#
+# Get the saved tries history
+read oldTryString < $savedTriesFile
+#
+# Initialize the new tries history with the current monitor status
+newTryString="${tryStatus}|"
+#
+# Append saved-try statuses to the current status, limiting the number of tries
+# to be saved by the triesRange value
+savedTryCount=1
+while [ $savedTryCount -lt $triesRange ]
+do
+   savedTry=$(/bin/echo ${oldTryString} | /bin/cut -f${savedTryCount} -d"|")
+   if [ "$savedTry" != "" ]
+   then
+#     We found a saved try at this position in the string
+      if [  $savedTryCount -lt $triesRange ]
+      then
+#        We haven't reached the limit so append the saved try to the new
+#        try history string
+         newTryString="${newTryString}${savedTry}|"
+         if [ $savedTry = Warn -o $savedTry = Crit ]
+         then
+#           The try value we're saving isn't OK so accumulate to the "bad count"
+            ((badCount = badCount + 1))
+            if [ "$lastBadStatus" = "" ]
+            then
+#              Because lastBadStatus is blank, we have to update it with the
+#              last bad status (Warn or Crit) - if the number of bad statuses
+#              is at least as much as the triesCount value, the monitor state
+#              must be set to the most recent bad status (Warn or Crit), even
+#              if the current status is OK
+               lastBadStatus=$savedTry
+            fi
+         fi
+      fi
+   else
+      break
+   fi
+   ((savedTryCount = savedTryCount + 1))
+done
+#
+# If the errorType is Loss, Time, or Okay (i.e., not Count nor Label), and
+# if the history file badCount meets or exceeds the triesCount, and if the
+# lastBadStatus is worse than the current nagiosStatus, then set nagiosStatus
+# to the lastBadStatus level. For Count and Label errorType, set the
+# nagiosStatus without regard to history file status
+case $errorType in
+   Loss|Time|Okay)
+      if [ $badCount -ge $triesCount ]
+      then
+         case $lastBadStatus in
+            Warn) if [ $nagiosStatus -lt 1 ]
+                  then
+                     nagiosStatus=1
+                  fi ;;
+            Crit) if [ $nagiosStatus -lt 2 ]
+                  then
+                     nagiosStatus=2
+                  fi ;;
+         esac
+#      else
+#         nagiosStatus=0
+      fi ;;
+   *) nagiosStatus=$currStatus
+esac
+#
+# Save the new tries history string
+/bin/echo "$newTryString" > $savedTriesFile
+}
+#
+processTries ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "########################"
+   /bin/echo "##### processTries #####"
+   /bin/echo "########################"
+   set -x
+fi
+#
+# This routine gets executed twice, once for the Loss history file and once for
+# the Time history file.
+# 
+# The following logic controls how a tries history file may be updated -
+# e.g., if we are processing the loss-related history file and the had
+# a loss-related error, we'll update the file with Warn or Crit, but if
+# we had no error or a non-loss-related error, we'll update the file with
+# Okay
+typeString="${historyType}${errorType}"
+case $typeString in
+   LossLoss|TimeTime) case $currStatus in
+                         1) tryStatus=Warn ;;
+                         2) tryStatus=Crit ;;
+                      esac ;;
+                   *) tryStatus=Okay ;;
+esac
+#
+# Test for the presense of a "tries history" file
+/usr/bin/test -s $savedTriesFile
+if [ $? -eq 0 ]
+then
+   savedTries=Present
+else
+   savedTries=Absent
+fi
+if [ $currStatus -eq 0 ]
+then
+#  The current status of the monitor is OK
+   if [ $savedTries = Present ]
+   then
+#     The tries history file exists, it must be evaluated to determine
+#     how many non-OK's there have been within the triesRange history
+      badCount=0
+      lastBadStatus=""
+      evaluateTriesHist
+   else
+#     The tries history file is absent or null, it must be initialized with
+#     the current monitor status
+      /bin/echo "${tryStatus}|" > $savedTriesFile
+   fi
+else
+#  The current status of the monitor is not OK (Warn or Crit)
+   if [ $savedTries = Absent ]
+   then
+#     The tries history file is absent or null, it must be initialized with
+#     the current monitor status
+      /bin/echo "${tryStatus}|" > $savedTriesFile
+   else
+#     The tries history file exists, it must be evaluated to determine
+#     how many non-OK's there have been within the triesRange history
+#     - also, we are saving the bad status, Warn or Crit, so that we can
+#     set the monitor status to that severity level if there have been
+#     enough bad tries within the triesRange
+      badCount=1
+      lastBadStatus=$tryStatus
+      evaluateTriesHist
+   fi
+fi
+#
+}
+#
+checkThresholds ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### checkThresholds #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+errorString=""
+errorType=Okay
+currStatus=0
+for thresholdType in timeWarn lossWarn failWarn countWarn labelWarn timeCrit lossCrit failCrit countCrit labelCrit
+do
+   errorMsg=""
+   case $thresholdType in
+       timeWarn) metric=$total
+                 threshold=$timeWarnThresh
+                 statCode=1 ;;
+       lossWarn) metric=$pingLossPcnt
+                 threshold=$lossWarnThresh
+                 statCode=1 ;;
+       failWarn) metric=$totalLines
+                 threshold=$failWarnThresh
+                 statCode=1 ;;
+      countWarn) metric=$hopCountChange
+                 threshold=$countWarnThresh
+                 statCode=1 ;;
+      labelWarn) metric=$hopLabelChange
+                 threshold=$labelWarnThresh
+                 statCode=1 ;;
+       timeCrit) metric=$total
+                 threshold=$timeCritThresh
+                 statCode=2 ;;
+       lossCrit) metric=$pingLossPcnt
+                 threshold=$lossCritThresh
+                 statCode=2 ;;
+       failCrit) metric=$totalLines
+                 threshold=$failCritThresh
+                 statCode=2 ;;
+      countCrit) metric=$hopCountChange
+                 threshold=$countCritThresh
+                 statCode=2 ;;
+      labelCrit) metric=$hopLabelChange
+                 threshold=$labelCritThresh
+                 statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      case $thresholdType in
+         failWarn|failCrit)
+            if [ $(/bin/echo "${metric}<${threshold}" | /usr/bin/bc) -gt 0 ]
+            then
+               if [ $statCode -gt $currStatus ]
+               then
+                  currStatus=$statCode
+               fi
+               errorMsg="no output from mtr"
+            fi ;;
+         *)
+            if [ $(/bin/echo "${metric}>=${threshold}" | /usr/bin/bc) -gt 0 ]
+            then
+               if [ $statCode -gt $currStatus ]
+               then
+                  currStatus=$statCode
+               fi
+#              Set errorMsg and errorType (only set errorType to Count or Label
+#              if it hasn't already been set to Loss or Time - if we do set to
+#              Count or Label, the Loss and Time history files will have most
+#              recent status set to Okay and they will not be involved in
+#              determination of the current monitor status)
+               case $thresholdType in
+                    timeWarn|timeCrit) errorMsg="slow response (${total} ms)"
+                                       errorType=Time ;;
+                    lossWarn|lossCrit) errorMsg="packet loss occurred"
+                                       errorType=Loss ;;
+                  countWarn|countCrit) errorMsg="hop count changed"
+                                       if [ $errorType = Okay ]
+                                       then
+                                          errorType=Count
+                                       fi ;;
+                  labelWarn|labelCrit) errorMsg="hop address(es) changed"
+                                       if [ $errorType = Okay ]
+                                       then
+                                          errorType=Label
+                                       fi ;;
+               esac
+            fi ;;
+      esac
+   fi
+#  Accumulate relevant error messages into one string
+   if [ "$errorMsg" != "" ]
+   then
+      if [ "$errorString" = "" ]
+      then
+         errorString="$errorMsg"
+      else
+         /bin/echo "$errorString" | /bin/grep "$errorMsg" > /dev/null
+         if [ $? -ne 0 ]
+         then
+            errorString="${errorString}, ${errorMsg}"
+         fi
+      fi
+   fi
+done
+#
+for historyType in Loss Time
+do
+  case $historyType in
+     Loss) savedTriesFile=$savedLossTriesFile
+           triesCount=$lossTriesCount
+           triesRange=$lossTriesRange ;;
+     Time) savedTriesFile=$savedTimeTriesFile
+           triesCount=$timeTriesCount
+           triesRange=$timeTriesRange ;;
+  esac
+  processTries
+done
+#
+setServiceMsg
+}
+#
+processWorkFile ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "###########################"
+   /bin/echo "##### processWorkFile #####"
+   /bin/echo "###########################"
+   set -x
+fi
+#
+lineCount=0
+total=0
+noInfoCount=0
+lossAmount=0
+hopCountChange=0
+hopLabelChange=0
+perfData=""
+perfDataAccum=""
+for mtrLine in `/bin/cat $workFile`
+do
+  totalLines=$(/bin/cat ${workFile} | /usr/bin/wc -l | /bin/sed 's/ //g')
+  ((lineCount = lineCount + 1))
+# The first line is headings, not used
+  if [ $lineCount -gt 1 ]
+  then
+     if [ $ipField = First ]
+     then
+        IP=$(/bin/echo ${mtrLine} | $awk '{print $1}' | /bin/sed 's/\./_/g')
+     else
+        IP=$(/bin/echo ${mtrLine} | $awk '{print $2}' | /bin/sed 's/\./_/g')
+     fi
+#     This block of code is commented out due to the change to collect loss
+#     data using ping
+#     case $lossColumn in
+#        2) loss=$(/bin/echo ${mtrLine} | $awk '{print $2}' | /bin/sed 's/%//g') ;;
+#        3) loss=$(/bin/echo ${mtrLine} | $awk '{print $3}' | /bin/sed 's/%//g') ;;
+#        4) loss=$(/bin/echo ${mtrLine} | $awk '{print $4}' | /bin/sed 's/%//g') ;;
+#        5) loss=$(/bin/echo ${mtrLine} | $awk '{print $5}' | /bin/sed 's/%//g') ;;
+#        6) loss=$(/bin/echo ${mtrLine} | $awk '{print $6}' | /bin/sed 's/%//g') ;;
+#     esac
+     case $lastColumn in
+        3) last=$(/bin/echo ${mtrLine} | $awk '{print $3}') ;;
+        4) last=$(/bin/echo ${mtrLine} | $awk '{print $4}') ;;
+        5) last=$(/bin/echo ${mtrLine} | $awk '{print $5}') ;;
+        6) last=$(/bin/echo ${mtrLine} | $awk '{print $6}') ;;
+     esac
+     ((total = total + last))
+     ((hopCount = lineCount - 1))
+     if [ $hopCount -lt 10 ]
+     then
+        hopNumber="0${hopCount}"
+     else
+        hopNumber=$hopCount
+     fi
+     if [ "$IP" != "???" ]
+     then
+         oldIFS="$IFS"
+         IFS="_"
+         set -- $IP
+         ipPrefix=$1
+         IFS="$oldIFS"
+         if [ "$ipPrefix" != "$mtrTarget" ]
+         then
+            if [ $genericLabels = Yes ]
+            then
+               metricLabelPrefix="${hopNumber}-"
+            else
+               metricLabelPrefix="${hopNumber}-${IP}-"
+            fi
+         else
+            metricLabelPrefix="${hopNumber}-${mtrTarget}-"
+         fi
+     else
+         metricLabelPrefix="${hopNumber}-NoInfo-"
+     fi
+#     This block of code is commented out due to the change to collect loss
+#     data using ping
+#     if [ "$IP" != "???" ]
+#     then
+#        metricLabel="${metricLabelPrefix}loss"
+#        ((lossAmount = lossAmount + loss))
+#     else
+#        if [ $lineCount -ne $totalLines ]
+#        then
+#           metricLabel="${metricLabelPrefix}lossIgnore"
+#        else
+#           metricLabel="${metricLabelPrefix}loss"
+#           ((lossAmount = lossAmount + loss))
+#        fi
+#     fi
+#     metricClause="${metricLabel}=${loss}"
+#     perfDataAccum="${perfDataAccum}${metricClause}|"
+     metricLabel="${metricLabelPrefix}time"
+     metricClause="${metricLabel}=${last}"
+     perfDataAccum="${perfDataAccum}${metricClause}|"
+     if [ $genericLabels = No ]
+     then
+        /bin/echo "$metricLabelPrefix" >> $hopWork
+     else
+        /bin/echo "$metricLabelPrefix" | /bin/sed 's/NoInfo-//g' >> $hopWork
+     fi
+  else
+     headingLine=$(/bin/echo ${mtrLine} | /bin/sed 's/  / /g')
+     oldIFS="$IFS"
+     IFS=" "
+     set -- $headingLine
+     headingColumn1=$1
+     headingColumn2=$2
+     headingColumn3=$3
+     headingColumn4=$4
+     headingColumn5=$5
+     headingColumn6=$6
+     IFS="$oldIFS"
+     if [ "$headingColumn1" = "HOST:" ]
+     then
+        ipField=Second
+     else
+        ipField=First
+     fi
+#     This block of code is commented out because of the change to find loss
+#     values using ping
+#     columnCount=1
+#     for columnValue in $headingColumn2 $headingColumn3 $headingColumn4 $headingColumn5 $headingColumn6
+#     do
+#        ((columnCount = columnCount + 1))
+#        if [ "$columnValue" = "Loss%" ]
+#        then
+#           lossColumn=$columnCount
+#           break
+#        fi
+#     done
+     columnCount=1
+     for columnValue in $headingColumn2 $headingColumn3 $headingColumn4 $headingColumn5 $headingColumn6
+     do
+        ((columnCount = columnCount + 1))
+        if [ "$columnValue" = "Last" ]
+        then
+           lastColumn=$columnCount
+           break
+        fi
+     done
+     columnCount=1
+     for columnValue in $headingColumn2 $headlingColumn3 $headingColumn4 $headingColumn5 $headingColumn6
+     do
+        ((columnCount = columnCount + 1))
+        if [ "$columnValue" = "Snt:" ]
+        then
+#           ((lossColumn = lossColumn - 2))
+           ((lastColumn = lastColumn - 2))
+           break
+        fi
+     done
+  fi
+done
+#
+if [ $totalLines -gt 1 ]
+then
+   metricClause="total-time=${total}"
+   perfDataAccum="${perfDataAccum}${metricClause}|"
+   /usr/bin/test -s $hopSave
+   if [ $? -eq 0 ]
+   then
+      hopWorkCount=$(/bin/cat ${hopWork} | /usr/bin/wc -l | /bin/sed 's/ //g')
+      hopSaveCount=$(/bin/cat ${hopSave} | /usr/bin/wc -l | /bin/sed 's/ //g')
+      if [ $hopWorkCount -ne $hopSaveCount ]
+      then
+         hopCountChange=1
+      else
+         /usr/bin/diff $hopWork $hopSave > /dev/null
+         if [ $? -ne 0 ]
+         then
+            hopLabelChange=1
+#            mikeMail=/tmp/MTR_mailToMike
+#            echo "prior check:" > $mikeMail
+#            cat $hopSave >> $mikeMail
+#            echo "" >> $mikeMail
+#            echo "current check:" >> $mikeMail
+#            echo "" >> $mikeMail
+#            cat $hopWork >> $mikeMail
+#            mail -s "hop label changes" Michael.Anderson@washpost.com < $mikeMail
+         fi
+      fi
+   fi
+fi
+/bin/cat $hopWork > $hopSave
+#
+perfDataAccum="${perfDataAccum}hop-count-change=${hopCountChange}|hop-label-change=${hopLabelChange}|"
+#
+if [ "$pingLossPcnt" != "" ]
+then
+   perfDataAccum="${perfDataAccum}pingLossPcnt=${pingLossPcnt}|"
+fi
+#
+checkThresholds
+}
+#
+executeMTR ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "######################"
+   /bin/echo "##### executeMTR #####"
+   /bin/echo "######################"
+   set -x
+fi
+#
+if [ $saveSSE = Yes ]
+then
+   /bin/echo $SSE > $sseSave
+fi
+#
+# If the script executor is root, we don't need to "sudo"
+owner=$(/usr/bin/whoami)
+if [ "$owner" = "root" ]
+then
+#  Don't use sudo
+   /usr/sbin/mtr --report -c 1 $mtrTarget > $workFile
+else
+#  We must use sudo
+   sudo mtr --report -c 1 $mtrTarget > $workFile
+fi
+pingLossPcnt=$(/bin/ping -c 1 ${mtrTarget} | /bin/grep "packets transmitted" | $cut -f3 -d"," | $awk '{print $1}' | /bin/sed 's/%//g')
+if [ $? -eq 0 ]
+then
+   mtrSuccess=Yes
+   processWorkFile
+else
+   mtrSuccess=No
+   toNagios
+fi
+}
+#
+numericCheck ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "########################"
+   /bin/echo "##### numericCheck #####"
+   /bin/echo "########################"
+   set -x
+fi
+#
+numericValue=Yes
+valueWork=$(/bin/echo ${valueHold} | /bin/sed 's/[0-9]//g')
+if [ "$valueWork" != "" ]
+then
+   numericValue=No
+fi
+}
+#
+setupTries ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "######################"
+   /bin/echo "##### setupTries #####"
+   /bin/echo "######################"
+   set -x
+fi
+#
+oldIFS="$IFS"
+IFS="="
+set -- $targetArg
+triesClause=$2
+IFS="$oldIFS"
+if [ "$triesClause" != "" ]
+then
+#  A "tries" value has been supplied
+   /bin/echo "$triesClause" | /bin/grep of > /dev/null
+   if [ $? -ne 0 ]
+   then
+#     The "triesClause" does not contain the word "of" so it is
+#     not in the format "xofy" (x tries out of y attempts)
+      valueHold=$triesClause
+      numericCheck
+      if [ $numericValue = Yes ]
+      then
+#        The triesClause value is numeric,
+#        make both triesCount and triesRange equal to it
+         count=$triesClause
+         range=$triesClause
+      fi
+   else
+#     The "triesClause" is in the "x tries of y attempts" format
+#     Get the values on either side of the word "of"
+      triesClause=$(/bin/echo ${triesClause} | /bin/sed 's/of/|/g')
+      oldIFS="$IFS"
+      IFS="|"
+      set -- $triesClause
+      count=$1
+      range=$2
+      IFS="$oldIFS"
+      valueHold=$count
+      numericCheck
+      if [ $numericValue = Yes ]
+      then
+#        The triesCount value (left of "of") is numeric
+         valueHold=$range
+         numericCheck
+         if [ $numericValue = Yes ]
+         then
+#           The triesRange value (right of "of") is numeric
+            if [ $range -lt $count ]
+            then
+#              triesRange is less than tries count,
+#              this is illogical, set triesRange to triesCount
+               range=$count
+            fi
+         else
+#           The triesRange value is not numeric, set it to the triesCount value
+            range=$count
+         fi
+      else
+#        The triesCount value is not numeric, set it and triesRange to 1
+         count=1
+         range=1
+      fi
+   fi
+fi
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+IFS="
+"
+#
+arg1=$1
+arg2=$2
+arg3=$3
+arg4=$4
+workPath=""
+parmFileName=""
+debugSw=No
+noStopCheck=No
+for inputArg in $arg1 $arg2 $arg3 $arg4
+do
+   if [ "$inputArg" != "" ]
+   then
+      /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+      if [ $? -eq 0 ]
+      then
+         displayDocumentation
+      else
+         /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+         if [ $? -eq 0 ]
+         then
+            debugSw=Yes
+            /bin/echo "####################"
+            /bin/echo "##### Mainline #####"
+            /bin/echo "####################"
+            set -x
+         else
+            /bin/echo "$inputArg" | /bin/grep -i NoStopCheck > /dev/null
+            if [ $? -eq 0 ]
+            then
+               noStopCheck=Yes
+            else
+               /bin/echo "$inputArg" | /bin/grep -i parmFile= > /dev/null
+               if [ $? -eq 0 ]
+               then
+                  oldIFS="$IFS"
+                  IFS="="
+                  set -- $inputArg
+                  parmFileName=$2
+                  IFS="$oldIFS"
+               else
+                  workPath=$inputArg
+                  /usr/bin/test -d $workPath
+                  if [ $? -ne 0 ]
+                  then
+                     /bin/echo "supplied path ${workPath} does not exist"
+                     exit 1
+                  fi
+               fi
+            fi
+         fi
+      fi
+   fi
+done
+#
+if [ "$workPath" = "" ]
+then
+   /bin/echo "no argument provided for work path"
+   exit 1
+fi
+#
+lastStatus=${workPath}/nscaMTR_lastStatus
+#
+# Determine the path to the send_nsca and send_nsca.cfg modules, if any
+nscaFound=No
+for nscaDir in $workPath /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 0
+fi
+#
+/usr/bin/test -s ${workPath}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${workPath}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the target host in Nagios
+# from the ${workPath}/Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${workPath}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${workPath}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+tab="	"
+#
+serviceSetup=No
+#
+mailPacketFile=/tmp/nscaMTR_mailPackets
+/bin/cat /dev/null > $mailPacketFile
+#
+if [ "$parmFileName" = "" ]
+then
+   parmFile=${workPath}/MTR.dta
+   currentParmTargets=/tmp/nscaMTR_parmsCurrent
+   savedParmTargets=/tmp/nscaMTR_parmsSaved
+else
+   parmFile=${workPath}/${parmFileName}
+   currentParmTargets=/tmp/nscaMTR_parmsCurrent_${parmFileName}
+   savedParmTargets=/tmp/nscaMTR_parmsSaved_${parmFileName}
+fi
+/usr/bin/test -s $parmFile
+if [ $? -eq 0 ]
+then
+#  The required input parameter file does exist with a non-zero size
+   /bin/cat $parmFile | $cut -f1 -d"|" > $currentParmTargets
+   /usr/bin/test -s $savedParmTargets
+   if [ $? -eq 0 ]
+   then
+#     There is a saved copy of the parameter file targets, is it different
+#     current version targets?
+#     (We are only checking for changes to targets, not for changes to any
+#     other parameters because we only want to trigger Nagios object
+#     deployment based on target changes)
+      /usr/bin/diff $currentParmTargets $savedParmTargets > /dev/null
+      if [ $? -ne 0 ]
+      then
+#        The current and saved parameters are not the same, save the current
+#        parameters and trigger Nagios service setup
+         serviceSetup=Yes
+         /bin/cat $currentParmTargets > $savedParmTargets
+      fi
+   else
+#     There is not a saved copy of the parameter file; save it and trigger
+#     Nagios service setup
+      serviceSetup=Yes
+      /bin/cat $currentParmTargets > $savedParmTargets
+   fi
+else
+#  The required parameter file is null or absent, exit
+   /bin/echo "required parm file ${parmFile} is absent or null, exiting" > $lastStatus
+   exit 1
+fi
+#
+mtrSuccess=Unknown
+#
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+if [ $noStopCheck = No ]
+then
+# A "NoStopCheck" argument was NOT provided to the script so we must check for
+# a StopAllMonitoring file
+   ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+   if [ $? -eq 0 ]
+   then
+      nagiosMsg="StopAllMonitoring file encountered, exiting"
+      /bin/echo "$nagiosMsg" > $lastStatus
+      nagiosStatus=0
+      serviceLoop
+      exit 0
+   fi
+fi
+#
+runCount=$(/bin/ps -ef | /bin/grep nscaMTR | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $runCount -gt 4 ]
+then
+   nagiosMsg="script backlog, nscaMTR exiting, runCount: $runCount" > $lastStatus
+   /bin/echo "$nagiosMsg" > $lastStatus
+   serviceLoop
+   exit 0
+fi
+#
+serviceSetupFlag=${workPath}/NagiosServiceSetupTriggered_MTR
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   capturedSvc="ACCUMULATE START"
+   toNagios
+   /bin/sleep 10
+   serviceLoop
+   capturedSvc="ACCUMULATE STOP"
+   /bin/sleep 10
+   toNagios
+   /bin/echo "processing completed normally" > $lastStatus
+   exit 0
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+workDir=/local/monitorWork
+/usr/bin/test -d $workDir
+if [ $? -ne 0 ]
+then
+   workDir=/tmp
+fi
+#
+for parmLine in `/bin/cat $parmFile`
+do
+   interval=0
+   oldIFS="$IFS"
+   IFS="|" 
+   set -- $parmLine
+   mtrTarget=$1
+   targetArgs=$2
+   IFS=" "
+   set -- $targetArgs
+   targetArg1=$1
+   targetArg2=$2
+   targetArg3=$3
+   targetArg4=$4
+   IFS="$oldIFS"
+   nagiosStatus=0
+   serviceMsg=""
+   timeWarnThresh=X
+   timeCritThresh=X
+   lossWarnThresh=X
+   lossCritThresh=X
+   failWarnThresh=X
+   failCritThresh=X
+   countWarnThresh=X
+   countCritThresh=X
+   labelWarnThresh=X
+   labelCritThresh=X
+   savedLossTriesFile=/tmp/MTR_${nagiosHost}-to-${mtrTarget}_lossTries
+   savedTimeTriesFile=/tmp/MTR_${nagiosHost}-to-${mtrTarget}_timeTries
+   savedLastSvcStatus=/tmp/MTR_${nagiosHost}-to-${mtrTarget}_lastSvcStatus
+   genericLabels=No
+   nonZeroOK=No
+   lossTriesCount=1
+   lossTriesRange=1
+   timeTriesCount=1
+   timeTriesRange=1
+   workFile=${workDir}/checkMtrStats_${mtrTarget}
+   workFile2=${workDir}/checkMtrStats_traceroute_${mtrTarget}
+   hopSave=/tmp/checkMtrStats_${mtrTarget}_hopSave
+   hopWork=/tmp/checkMtrStats_${mtrTarget}_hopWork
+   /bin/cat /dev/null > $hopWork
+   for targetArg in $targetArg1 $targetArg2 $targetArg3 $targetArg4 $targetArg5
+   do
+      if [ "$targetArg" != "" ]
+      then
+         /bin/echo "$targetArg" | /bin/grep -E "Warn|Crit" > /dev/null
+         if [ $? -eq 0 ]
+         then
+#           The argument contains either or both of Warn and Crit values
+#           so this must be a threshold string
+            threshString=$targetArg
+            setupThresholds
+         else
+            /bin/echo "$targetArg" | /bin/grep "lossTries=" > /dev/null
+            if [ $? -eq 0 ]
+            then
+               setupTries
+               lossTriesCount=$count
+               lossTriesRange=$range
+            else
+               /bin/echo "$targetArg" | /bin/grep "timeTries=" > /dev/null
+               if [ $? -eq 0 ]
+               then
+                  setupTries
+                  timeTriesCount=$count
+                  timeTriesRange=$range
+               else
+                  if [ "$targetArg" = "GenericHopLabels" ]
+                  then
+#                     "loss" and "time" metrics for each hop will be labeled
+#                     with hop-count-number but without other hop ID
+                     genericLabels=Yes
+                  else
+                     if [ "$targetArg" = "NonZeroOK" ]
+                     then
+                        nonZeroOK=Yes
+                     else
+                        /bin/echo "$targetArg" | /bin/grep "interval=" > /dev/null
+                        if [ $? -eq 0 ]
+                        then
+                           oldIFS="$IFS"
+                           IFS="="
+                           set -- $targetArg
+                           interval=$2
+                           IFS="$oldIFS"
+#                          Check to see if the inteval value is numeric
+                           valueHold=$interval
+                           numericCheck
+                           if [ $numericValue != Yes ]
+                           then
+#                             The interval value is not numeric, don't use
+                              interval=0
+                           fi
+                        fi
+                     fi
+                  fi
+               fi
+            fi
+         fi
+      fi
+   done
+#  Get the system seconds-since-epoch value
+   SSE=$(/bin/date '+%s')
+   if [ $interval -eq 0 ]
+   then
+#     There is no interval checking and MTR should be executed for this target
+#     everytime the script executes
+      saveSSE=No
+      executeMTR
+   else
+#     An interval check is required
+      sseSave=/tmp/nscaMTR_savedSSE_${mtrTarget}
+      /usr/bin/test -s $sseSave
+      if [ $? -eq 0 ]
+      then
+#        The SSE of the last MTR for this target was saved
+         read lastSSE < $sseSave
+         ((sseDiff = SSE - lastSSE))
+         if [ $sseDiff -ge $interval ]
+         then
+#           The difference between current and saved SSE is at least as much
+#           as the interval parameter, so mtr must be executed
+            saveSSE=Yes
+            executeMTR
+         fi
+      else
+#        The SSE of the last MTR for this target was not saved (this is most
+#        likely the first execution for this target) so save it now and
+#        execute MTR
+         saveSSE=Yes
+         executeMTR
+      fi
+   fi
+   /bin/echo $nagiosStatus > $savedLastSvcStatus
+done
+#
+/bin/echo "processing completed normally" > $lastStatus
+exit 0
