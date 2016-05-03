@@ -1,0 +1,21 @@
+type=Cache|accessCount~~@hitsCount~~@||
+type=ClassLoading|LoadedClassCount~~@||
+type=Compilation|TotalCompilationTime~~@||
+type=connection-queue|countqueued-count~warn=1,crit=101~@|not=connection-queue-mon|
+type=connection-queue-mon|countopenconnections~~@countqueued~warn=1,crit=50~@||
+type=Executor|activeCount~~@largestPoolSize~~@poolSize~~@|not=tomcatPrivateThreadPool|
+type=GarbageCollector|CollectionCount~~@CollectionTime~~@||
+type=GlobalRequestProcessor|bytesReceived~~@bytesSent~~@errorCount~~@processingTime~~@requestCount~~@||
+type=http-listener|countopenconnections-count~~@||
+type=jdbc-connection-pool|numconnused-current~warn=4~@waitqueuelength-count~warn=1,crit=2~@|not=jdbc-connection-pool-mon|
+type=jdbc-connection-pool-mon|numconnused~warn=4~@waitqueuelength~warn=1,crit=2~@||
+type=Memory|HeapMemoryUsage~~~~~@NonHeapMemoryUsage~~~~~@ObjectPendingFinalizationCount~warn=10~@|not=MemoryPool,MemoryManager|
+type=MemoryPool|Usage~~~~~@|not=Cache|
+type=memory-mon|committedheapsize-count~~@committednonheapsize-count~~@initheapsize-count~~@initnonheapsize-count~~@maxheapsize-count~~@maxnonheapsize-count~~@usedheapsize-count~~@usednonheapsize-count~~@||
+type=PWCConnectionQueue|countQueued~warn=1,crit=101~@||
+type=request-mon|countbytesreceived~~@countbytestransmitted~~@countopenconnections~~@countother~~@countrequests~~@||
+type=StringCache|accessCount~~@hitCount~~@||
+type=Threading|ThreadCount~~@TotalStartedThreadCount~~@||
+type=thread-pool|averagetimeinqueue-current~~@averageworkcompletiontime-current~~@currentnumberofthreads-current~~@numberofbusythreads-count~~@numberofworkitemsinqueue-current~~@|not=thread-pool-mon,thread-pools|
+type=thread-pool-mon|corethreads~~@currentthreadcount~~@currentthreadsbusy~~@||
+type=thread-system-mon|deadlockedthreads~okayMsg=None of the threads are deadlocked.,noPerfData~@threadcount~~@totalstartedthreadcount~~@||
