@@ -1,0 +1,612 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaIfacePkts information and usage:"
+/bin/echo "-------------------------------------------"
+/bin/echo " 1. captures interface packet metrics for Linux systems only"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. requires argument consisting of comma-delimited interface"
+/bin/echo "    names for which to collect metrics"
+/bin/echo "    Examples:  eth0"
+/bin/echo "               eth0,bond1"
+/bin/echo "               eth4,eth5,bond2"
+/bin/echo " 5. accepts arguments for warning/critical thresholds"
+/bin/echo "    - must be specified as a comma-delimited, no-space string"
+/bin/echo "    - options must appear exactly as shown, case sensitive"
+/bin/echo "    - may appear in any order or combination"
+/bin/echo "    - metric-to-threshold compares use the \"-ge\" operator"
+/bin/echo "      Valid threshold parameter options:"
+/bin/echo "         IpktsWarn        IpktsCrit      (incoming okay packets)"
+/bin/echo "         OpktsWarn        OpktsCrit      (outgoing okay packets)"
+/bin/echo "         IpktErrsWarn     IpktErrsCrit   (incoming error packets)"
+/bin/echo "         OpktErrsWarn     OpktErrsCrit   (outgoing error packets)"
+/bin/echo "         noPerfData                 (no Nagios performance data)"
+/bin/echo "                                    (i.e., no data to Graphite)"
+/bin/echo "      Examples:"
+/bin/echo "         outPktsBadWarn=10"
+/bin/echo "         outPktsBadCrit=10,noPerfData"
+/bin/echo " 6. accepts \"tries=n\" argument (case insensitive) to be used"
+/bin/echo "    as the \"max_check_attempts\" value in the auto-deployed"
+/bin/echo "    Nagios service (if not supplied, default is 1)"
+/bin/echo "    Explanation - if there are warning and/or critical thresholds"
+/bin/echo "    in effect for this monitor, and if the warning/critical action"
+/bin/echo "    (email/alert) should occur immediately upon a threshold being"
+/bin/echo "    met/exceeded, then don't supply this argument, or supply"
+/bin/echo "    \"tries=1\". However, if you want a threshold-met/exceeded"
+/bin/echo "    condition to persist for some duration before action is taken,"
+/bin/echo "    then use this argument to define the desired duration."
+/bin/echo "    The \"duration\" is actually the number of consecutive times"
+/bin/echo "    the Nagios service must be set to a WARNING or CRITICAL state"
+/bin/echo "    in order to trigger an action. For example, if this script"
+/bin/echo "    is run every five minutes and a non-OKAY condition must"
+/bin/echo "    persist for ten minutes before notification takes place,"
+/bin/echo "    then use \"tries=3\":"
+/bin/echo "    a. problem state onset occurs - Nagios check attempts=1"
+/bin/echo "    b. 5 minutes later, problem state persists - check attempts=2"
+/bin/echo "    c. 5 minutes later, problem state persists - check attempts=3,"
+/bin/echo "       action (email/alert) is triggered"
+/bin/echo " 7. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 8. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 9. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo "10. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_IfacePkts\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to the list of monitored"
+/bin/echo "    interfaces or a to the \"tries\" parameter)"
+/bin/echo "11. if expected execution results are not observed, check contents"
+/bin/echo "    of the \"nscaIfacePkts_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   targetHost=$nagiosHost
+   nagiosSvc="Interface Packets: ${ifaceParm}"
+else
+#  Nagios service setup triggered with this execution (first time)
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="Interface Packets: ${ifaceParm}"
+   fi
+   nagiosMsg="IfacePkts@${nagiosHost}@${nagiosHostType}@APPNAME@${capturedSvc}@${tries}@"
+   capturedSvc=""
+fi
+# Format an NSCA-compatible string and send to Nagios via NSCA
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ $debugSw = no ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+serviceLoop ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### serviceLoop #####"
+   set -x
+fi
+#
+exitCode=0
+ifaceParm=X
+ifaceHold=""
+parmCount=0
+while [ "$ifaceParm" != "" ]
+do
+   ((parmCount = parmCount + 1))
+   ifaceParm=$(/bin/echo ${ifaceString} | $cut -f$parmCount -d",")
+   if [ "$ifaceParm" != "$ifaceHold" ]
+   then
+      if [ "$ifaceParm" != "" ]
+      then
+         ifaceHold=$ifaceParm
+         toNagios
+      fi
+   else
+      ifaceParm=""
+   fi
+done
+exit 0
+}
+#
+thresholdCheck ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### thresholdCheck #####"
+   set -x
+fi
+#
+# Compare metrics to thresholds and set exitCode appropriately
+exitCode=0
+for thresholdType in inPktsGoodWarn outPktsGoodWarn inPktsBadWarn outPktsBadWarn inPktsGoodCrit outPktsGoodCrit inPktsBadCrit outPktsBadCrit
+do
+   case $thresholdType in
+      inPktsGoodWarn)  metric=$ipgRate
+                       threshold=$inPktsGoodWarnThresh
+                       statCode=1 ;;
+      outPktsGoodWarn) metric=$opgRate
+                       threshold=$outPktsGoodWarnThresh
+                       statCode=1 ;;
+      inPktsBadWarn)   metric=$ipbRate
+                       threshold=$inPktsBadWarnThresh
+                       statCode=1 ;;
+      outPktsBadWarn)  metric=$opbRate
+                       threshold=$outPktsBadWarnThresh
+                       statCode=1 ;;
+      inPktsGoodCrit)  metric=$ipgRate
+                       threshold=$inPktsGoodCritThresh
+                       statCode=2 ;;
+      outPktsGoodCrit) metric=$opgRate
+                       threshold=$outPktsGoodCritThresh
+                       statCode=2 ;;
+      inPktsBadCrit)   metric=$ipbRate
+                       threshold=$inPktsBadCritThresh
+                       statCode=2 ;;
+      outPktsBadCrit)  metric=$opbRate
+                       threshold=$outPktsBadCritThresh
+                       statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $(/bin/echo "${metric}>=${threshold}" | /usr/bin/bc) -gt 0 ]
+      then
+         exitCode=$statCode
+      fi
+   fi
+done
+#
+}
+#
+processNetstatMetrics ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### processNetstatMetrics #####"
+   set -x
+fi
+#
+statFile=${homeDir}/checkIF_savedNetstats_${ifaceParm}
+sseFile=${homeDir}/checkIF_savedNetstatSSE_${ifaceParm}
+#
+# Capture specific metrics from netstat output
+oldIFS="$IFS"
+IFS=" "
+set -- $netstatLine
+inPktsGood=$4
+inPktsBad=$5
+outPktsGood=$8
+outPktsBad=$9
+IFS="$oldIFS"
+#
+# Determine if stats were saved from a previous check (in order to calculate
+# per-second rates), if not, save stats for the first time
+/usr/bin/test -s $statFile
+if [ $? -eq 0 ]
+then
+   statsSaved=Yes
+fi
+/usr/bin/test -s $sseFile
+if [ $? -eq 0 ]
+then
+   sseSaved=Yes
+fi
+if [ $statsSaved = No -o $sseSaved = No ]
+then
+   /bin/echo "Ipkts|$inPktsGood|Ierrs|$inPktsBad|Opkts|$outPktsGood|Oerrs|$outPktsBad|" > $statFile
+   /bin/echo $currSSE > $sseFile
+   nagiosMsg="Initial check execution, packet counts saved"
+   exitCode=0
+else
+   read savedStats < $statFile
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $savedStats
+   savedIPG=$2
+   savedIPB=$4
+   savedOPG=$6
+   savedOPB=$8
+   IFS="$oldIFS"
+   /bin/echo "Ipkts|$inPktsGood|Ierrs|$inPktsBad|Opkts|$outPktsGood|Oerrs|$outPktsBad|" > $statFile
+   if [ $savedIPG -gt $inPktsGood -o $savedOPG -gt $outPktsGood ]
+   then
+#     There was a reboot and packet counts were reset
+      /bin/echo $currSSE > $sseFile
+      nagiosMsg="Reboot occurred since last check, packet counts reset"
+      exitCode=0
+   else
+      ((inPktsGood = inPktsGood - savedIPG))
+      ((inPktsBad = inPktsBad - savedIPB))
+      ((outPktsGood = outPktsGood - savedOPG))
+      ((outPktsBad = outPktsBad - savedOPB))
+      read savedSSE < $sseFile
+      ((sseDiff = currSSE - savedSSE))
+      /bin/echo $currSSE > $sseFile
+      ipgRate=$(/bin/echo $inPktsGood $sseDiff | $awk '{printf "%7.2f",($1/$2)}')
+      ipbRate=$(/bin/echo $inPktsBad $sseDiff | $awk '{printf "%7.2f",($1/$2)}')
+      opgRate=$(/bin/echo $outPktsGood $sseDiff | $awk '{printf "%7.2f",($1/$2)}')
+      opbRate=$(/bin/echo $outPktsBad $sseDiff | $awk '{printf "%7.2f",($1/$2)}')
+      ipgRate=$(/bin/echo $ipgRate | /bin/sed 's/ //g')
+      ipbRate=$(/bin/echo $ipbRate | /bin/sed 's/ //g')
+      opgRate=$(/bin/echo $opgRate | /bin/sed 's/ //g')
+      opbRate=$(/bin/echo $opbRate | /bin/sed 's/ //g')
+      thresholdCheck
+      metrics1="IpktsPerSec=${ipgRate}, OpktsPerSec=${opgRate}, IpktErrsPerSec=${ipbRate}, OpktErrsPerSec=${opbRate}"
+      metrics2=$(/bin/echo $metrics1 | /bin/sed 's/,//g')
+      metrics2="SSE=${currSSE} ${metrics2}"
+      if [ $perfData = Yes ]
+      then
+         nagiosMsg="${metrics1}${thresholdDisp} | ${metrics2}"
+      else
+         nagiosMsg="${metrics1}${thresholdDisp}"
+      fi
+   fi
+fi
+#
+/bin/echo "processing completed normally" > $lastStatus
+#
+toNagios
+}
+#
+perfDataCheck ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### perfDataCheck #####"
+   set -x
+fi
+#
+# If a threshold argument has been supplied, and if that arguments contains the
+# string "noPerfData", set the perfData switch to "No" to prevent perfdata
+# from being sent to Nagios (and thus no data will be interfaced to Graphite)
+/bin/echo $argString | /bin/grep noPerfData > /dev/null
+if [ $? -eq 0 ]
+then
+   perfData=No
+   argString=$(/bin/echo $argString | /bin/sed 's/noPerfData//g' | /bin/sed 's/,,/,/g')
+fi
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+IFS=" "
+perfData=Yes
+debugSw=no
+argString=""
+tries=1
+#
+# Process input arguments (one is required for the interface name of interest)
+for inputArg in $1 $2 $3 $4 $5
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+   displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo "##### Top of mainline #####"
+         debugSw=yes
+         set -x
+      else
+         /bin/echo "$inputArg" | /bin/grep "=" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            /bin/echo "$inputArg" | /bin/grep "tries=" > /dev/null
+            if [ $? -eq 0 ]
+            then
+               oldIFS="$IFS"
+               IFS="="
+               set -- $inputArg
+               tries=$2
+               IFS="$oldIFS"
+#              Is the tries value numeric?
+               triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+               if [ "$triesHold" != "" ]
+               then
+#                 The tries value is not numeric, default to 1
+                  tries=1
+               fi
+            else
+               argString="$inputArg"
+               perfDataCheck
+               argString=$(/bin/echo ${argString} | /bin/sed 's/,/ /g')
+            fi
+         else
+            ifaceString=$inputArg
+         fi
+      fi
+   fi
+done
+#
+# Determine path for the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaIfacePkts_lastStatus
+#
+if [ "$ifaceString" = "" ]
+then
+   /bin/echo "at least one interface must be supplied as an argument to the script, not found, exiting" > $lastStatus
+   exit 0
+fi
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the Nagios target host
+# from the Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+exitCode=0
+tab="	"
+#
+serviceSetup=No
+#
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   nagiosMsg="StopAllMonitoring file encountered, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+   serviceLoop
+fi
+#
+processCount=$(/bin/ps -ef | /bin/grep nscaIfacePkts | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $processCount -gt 3 ]
+then
+   nagiosMsg="prior execution not completed, exiting"
+   /bin/echo "$nagiosMsg" > $lastStatus
+   serviceLoop
+fi
+#
+# Has the list of monitored interfaces changed?
+savedInterfaces=/tmp/nscaIfacePkts_ifaceString_saved
+/usr/bin/test -s $savedInterfaces
+if [ $? -eq 0 ]
+then
+   read savedInterfaceData < $savedInterfaces
+   if [ "$ifaceString" != "$savedInterfaceData" ]
+   then
+      serviceSetup=Yes
+      /bin/echo "$ifaceString" > $savedInterfaces
+   fi
+else
+   /bin/echo "$ifaceString" > $savedInterfaces
+fi
+#
+# Has the number of Nagios check attempts changed?
+savedTries=/tmp/nscaIfacePkts_tries_saved
+/usr/bin/test -s $savedTries
+if [ $? -eq 0 ]
+then
+   read savedTriesData < $savedTries
+   if [ "$tries" != "$savedTriesData" ]
+   then
+#     The number of check attempts has changed
+      serviceSetup=Yes
+      /bin/echo "$tries" > $savedTries
+   fi
+else
+   /bin/echo "$tries" > $savedTries
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_IfacePkts
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   serviceSetup=Yes
+   capturedSvc="ACCUMULATE START"
+   toNagios
+   /bin/sleep 10
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+# Set threshold values
+inPktsGoodCritThresh=X
+inPktsGoodWarnThresh=X
+outPktsGoodCritThresh=X
+outPktsGoodWarnThresh=X
+inPktsBadCritThresh=X
+inPktsBadWarnThresh=X
+outPktsBadCritThresh=X
+outPktsBadWarnThresh=X
+#
+if [ "$argString" != "" ]
+then
+   for argNum in $argString
+   do
+      argType=$(/bin/echo $argNum | $cut -f1 -d"=")
+      case $argType in
+        IpktsCrit) inPktsGoodCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        IpktsWarn) inPktsGoodWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        OpktsCrit) outPktsGoodCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        OpktsWarn) outPktsGoodWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        IpktErrsCrit) inPktsBadCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        IpktErrsWarn) inPktsBadWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        OpktErrsCrit) outPktsBadCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        OpktErrsWarn) outPktsBadWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+      esac
+   done
+#  Format threshold argument for display in Nagios message
+   thresholdDisp=$(/bin/echo $argString | /bin/sed 's/ /,/g')
+   thresholdDisp=", thresholds: ${thresholdDisp}"
+else
+   thresholdDisp=""
+fi
+#
+IFS="
+"
+#
+flagFile=${homeDir}/${flagName}
+statsSaved=No
+sseSaved=No
+#
+netstatLine=""
+#
+# Capture system seconds-since-epoch value
+currSSE=$(/bin/date '+%s')
+#
+/bin/uname -a | /bin/grep -i ubuntu > /dev/null
+if [ $? -ne 0 ]
+then
+   osType=""
+else
+   osType=Ubuntu
+fi
+#
+# Capture netstat metrics
+ifaceParm=X
+ifaceHold=""
+parmCount=0
+while [ "$ifaceParm" != "" ]
+do
+   ((parmCount = parmCount + 1))
+   ifaceParm=$(/bin/echo ${ifaceString} | $cut -f$parmCount -d",")
+   if [ "$ifaceParm" != "$ifaceHold" ]
+   then
+      if [ "$ifaceParm" != "" ]
+      then
+         ifaceHold=$ifaceParm
+         nagiosSvc="Interface Packets: ${ifaceParm}"
+         if [ "$osType" != "Ubuntu" ]
+         then
+            netstatLine=$(/bin/netstat --interfaces=${ifaceParm} | /usr/bin/tail -1)
+         else
+            netstatLine=$(/bin/netstat --interfaces | /bin/grep ${ifaceParm})
+         fi
+         if [ "$netstatLine" = "" ]
+         then
+            nagioMsg="netstat data not available on $nagiosHost"
+            /bin/echo "$nagiosMsg" > $lastStatus
+            exitCode=0
+            toNagios
+         else
+            processNetstatMetrics
+         fi
+      fi
+   else
+      ifaceParm=""
+   fi
+done
+#
+if [ $serviceSetup = Yes ]
+then
+   capturedSvc="ACCUMULATE STOP"
+   /bin/sleep 10
+   toNagios
+fi
+#
