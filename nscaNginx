@@ -1,0 +1,648 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaNginx information and usage:"
+/bin/echo "---------------------------------------"
+/bin/echo " 1. captures Nginx response-time metrics for Linux systems only"
+/bin/echo "    (the metric MUST BE THE LAST FIELD IN THE LOG LINE!)"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. requires presence of a parameter file named nginx_paths.dta"
+/bin/echo "    in the executing user's home directory else the script will"
+/bin/echo "    exit - this file must contain a list of any logfile paths"
+/bin/echo "    from which to retrieve Nginx response-times for this host"
+/bin/echo " 5. accepts arguments for warning/critical thresholds"
+/bin/echo "    - must be specified as a comma-delimited, no-space string"
+/bin/echo "    - options must appear exactly as shown, case sensitive"
+/bin/echo "    - may appear in any order or combination"
+/bin/echo "    - metric-to-threshold compares use the \"-ge\" operator"
+/bin/echo "      Valid threshold parameter options:"
+/bin/echo "         highWarn        averageWarn      medianWarn"
+/bin/echo "         highCrit        averageCrit      medianCrit"
+/bin/echo "         noPerfData                 (no Nagios performance data)"
+/bin/echo "                                    (i.e., no data to Graphite)"
+/bin/echo "      Examples:"
+/bin/echo "         highWarn=100,averageCrit=5"
+/bin/echo "         medianWarn=2,averageCrit=3,noPerfData"
+/bin/echo " 6. accepts \"tries=n\" argument (case insensitive) to be used"
+/bin/echo "    as the \"max_check_attempts\" value in the auto-deployed"
+/bin/echo "    Nagios service (if not supplied, default is 1)"
+/bin/echo "    Explanation - if there are warning and/or critical thresholds"
+/bin/echo "    in effect for this monitor, and if the warning/critical action"
+/bin/echo "    (email/alert) should occur immediately upon a threshold being"
+/bin/echo "    met/exceeded, then don't supply this argument, or supply"
+/bin/echo "    \"tries=1\". However, if you want a threshold-met/exceeded"
+/bin/echo "    condition to persist for some duration before action is taken,"
+/bin/echo "    then use this argument to define the desired duration."
+/bin/echo "    The \"duration\" is actually the number of consecutive times"
+/bin/echo "    the Nagios service must be set to a WARNING or CRITICAL state"
+/bin/echo "    in order to trigger an action. For example, if this script"
+/bin/echo "    is run every five minutes and a non-OKAY condition must"
+/bin/echo "    persist for ten minutes before notification takes place,"
+/bin/echo "    then use \"tries=3\":"
+/bin/echo "    a. problem state onset occurs - Nagios check attempts=1"
+/bin/echo "    b. 5 minutes later, problem state persists - check attempts=2"
+/bin/echo "    c. 5 minutes later, problem state persists - check attempts=3,"
+/bin/echo "       action (email/alert) is triggered"
+/bin/echo " 7. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 8. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 9. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo "10. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_Nginx\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to the list of monitored"
+/bin/echo "    interfaces or a to the \"tries\" parameter)"
+/bin/echo "11. if expected execution results are not observed, check contents"
+/bin/echo "    of the \"nscaNginx_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   targetHost=$nagiosHost
+   nagiosSvc="Nginx Response Times: ${logPath}"
+else
+#  Nagios service setup triggered with this execution (first time)
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="Nginx Response Times: ${logPath}"
+   fi
+   nagiosMsg="Nginx@${nagiosHost}@${nagiosHostType}@APPNAME@${capturedSvc}@${tries}@"
+   capturedSvc=""
+fi
+# Format an NSCA-compatible string and send to Nagios via NSCA
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ $debugSw = no ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+thresholdCheck ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### thresholdCheck #####"
+   set -x
+fi
+#
+# Compare metrics to thresholds and set exitCode appropriately
+exitCode=0
+for thresholdType in highWarn averageWarn medianWarn highCrit averageCrit medianCrit
+do
+   case $thresholdType in
+         highWarn) threshold=$highWarnThresh
+                   metric=$highMetric
+                   statCode=1 ;;
+      averageWarn) threshold=$averageWarnThresh
+                   metric=$average
+                   statCode=1 ;;
+       medianWarn) threshold=$medianWarnThresh
+                   metric=$median
+                   statCode=1 ;;
+         highCrit) threshold=$highCritThresh
+                   metric=$highMetric
+                   statCode=2 ;;
+      averageCrit) threshold=$averageCritThresh
+                   metric=$average
+                   statCode=2 ;;
+       medianCrit) threshold=$medianCritThresh
+                   metric=$median
+                   statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $(/bin/echo "${metric}>=${threshold}" | /usr/bin/bc) -gt 0 ]
+      then
+         exitCode=$statCode
+      fi
+   fi
+done
+#
+serviceMetrics="AvgRequestTime=${average}, HighRequestTime=${highMetric}, LowRequestTime=${lowMetric}, MedianRequestTime=${median}, StandardDeviation=${standardDeviation}, RequestCount=${metricCount}"
+if [ $perfData = Yes ]
+then
+   perfdataMetrics=`/bin/echo $serviceMetrics | /bin/sed 's/,//g'`
+   nagiosMsg="${serviceMetrics}${thresholds} | SSE=${SSE} ${perfdataMetrics}"
+else
+   nagiosMsg="${serviceMetrics}${thresholds}"
+fi
+toNagios
+}
+#
+processMetrics ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### processMetrics #####"
+   set -x
+fi
+#
+highMetric=$(/usr/bin/tail -1 $workFile)
+lowMetric=$(/usr/bin/head -n 1 $workFile)
+#
+# The first line in workFile may be null
+metricCountOffset=0
+if [ "$lowMetric" = "" ]
+then
+#  The first line is null, loop through lines until not null
+   lineNumber=1
+   while [ "$lowMetric" = "" ]
+   do
+#     Get the nth line
+      ((lineNumber = lineNumber + 1))
+      lowMetric=$(/bin/sed -n "${lineNumber}{p;q;}" ${workFile})
+   done
+#  Determine the count of null lines
+   ((metricCountOffset = lineNumber - 1))
+fi
+#
+metricCount=$(/bin/cat $workFile | /usr/bin/wc -l | /bin/sed 's/ //g')
+((metricCount = metricCount - metricCountOffset))
+#
+# The next section after this will load the workFile contents into an array.
+# The first entry starts at array(0), not array(1), hence, if three values
+# are in the array, the middle value is the median, but it is at array(1),
+# not array(2). Dividing 2 into 3, the dividend is 1, so 1 is the "midLine"
+# number (it points to the middle array value).
+#
+((dividend = metricCount / 2))
+((remainder = metricCount % 2))
+if [ $remainder -eq 0 ]
+then
+   evenCount=Yes
+   ((midLine1 = dividend - 1))
+   midLine2=$dividend
+else
+   evenCount=No
+   midLine=$dividend
+fi
+#
+# Load the workFile contents into an array
+#
+metricTotal=0
+for metricValue in `/bin/cat $workFile`
+do
+   metricArray[${#metricArray[@]}]=$metricValue
+   ((metricTotal = metricTotal + metricValue))
+done
+#
+# Calculate the median
+#
+if [ $evenCount = Yes ]
+then
+   midValue1=$(print ${metricArray[$midLine1]})
+   midValue2=$(print ${metricArray[$midLine2]})
+   ((median = midValue1 + midValue2))
+   median=$(/bin/echo $median | $awk '{printf "%7.3f",($1/2)}' | /bin/sed 's/ //g')
+else
+   median=$(print ${metricArray[$midLine]})
+fi
+#
+# Calculate the average
+#
+average=$(/bin/echo $metricTotal $metricCount | $awk '{printf "%7.3f",($1/$2)}' | /bin/sed 's/ //g')
+#
+# Calculate the variance and standard deviation
+#
+if [ $metricCount -ne 1 ]
+then
+   diffSquaredTotal=0
+   metricIndex=0
+   while [ $metricIndex -lt ${#metricArray[@]} ]
+   do
+      metricValue=$(print ${metricArray[$metricIndex]})
+      if [ $metricValue -le $average ]
+      then
+         ((valueDiff = average - metricValue))
+      else
+         ((valueDiff = metricValue - average))
+      fi
+      ((diffSquared = valueDiff * valueDiff))
+      ((diffSquaredTotal = diffSquaredTotal + diffSquared))
+      ((metricIndex = metricIndex + 1))
+   done
+   variance=$(/bin/echo $diffSquaredTotal $metricCount | $awk '{printf "%7.3f",($1/$2)}' | /bin/sed 's/ //g')
+   standardDeviation=$(/bin/echo $variance | $awk '{print sqrt($1)}' | /bin/sed 's/ //g')
+else
+   standardDeviation=0
+fi
+#
+thresholdCheck
+}
+#
+getMetrics ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### getMetrics #####"
+   set -x
+fi
+#
+currLogSize=$(ls -l ${logPath} | $awk '{print $5}')
+if [ "$currLogSize" != "" ]
+then
+   sizeHold=$(/bin/echo $currLogSize | /bin/sed 's/[0-9]//g')
+   if [ "$sizeHold" = "" ]
+   then
+#     The retrieved value is numeric
+      /usr/bin/test -s $savedSizeFile
+      if [ $? -eq 0 ]
+      then
+#        The saved size file exists
+         read lastLogSize < $savedSizeFile
+         sizeHold=$(/bin/echo $lastLogSize | /bin/sed 's/[0-9]//g')
+         if [ "$sizeHold" = "" ]
+         then
+#           The saved file size is numeric
+            if [ $currLogSize -gt $lastLogSize ]
+            then
+#              The file has increased in size
+               /usr/bin/tail -c +$lastLogSize ${logPath} | $awk -F" " '{print $NF}' | /bin/egrep -o '[0-99999][.][0-9][0-9][0-9]' | $sort -n > $workFile
+            else
+               if [ $currLogSize -eq $lastLogSize ]
+               then
+#                 The file has not increased in size
+                  nagiosMsg="no change in log since last check"
+                  toNagios
+               else
+#                 The file is smaller since the last check, rotation probable,
+#                 get all entries from the file
+                  /bin/cat ${logPath} | $awk -F" " '{print $NF}' | /bin/egrep -o '[0-99999][.][0-9][0-9][0-9]' | $sort -n > $workFile
+               fi
+            fi
+         else
+            nagiosMsg="non-numeric valued found for saved logfile size, exiting"
+            toNagios
+         fi
+      else
+         nagiosMsg="Initialized lastLogSizeFile, no records processed"
+         toNagios
+      fi
+#     Save the current log size
+      /bin/echo $currLogSize > $savedSizeFile
+   else
+      nagiosMsg="non-numeric valued found for current logfile size, exiting"
+      toNagios
+   fi
+else
+   nagiosMsg="null valued identified for log size, exiting"
+   toNagios
+fi
+}
+#
+perfDataCheck ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### perfDataCheck #####"
+   set -x
+fi
+#
+# If a threshold argument has been supplied, and if that arguments contains the
+# string "noPerfData", set the perfData switch to "No" to prevent perfdata
+# from being sent to Nagios (and thus no data will be interfaced to Graphite)
+/bin/echo $argString | /bin/grep noPerfData > /dev/null
+if [ $? -eq 0 ]
+then
+   perfData=No
+   argString=$(/bin/echo $argString | /bin/sed 's/noPerfData//g' | /bin/sed 's/,,/,/g')
+fi
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+/usr/bin/test -f /bin/sort
+if [ $? -eq 0 ]
+then
+   sort=/bin/sort
+else
+   sort=/usr/bin/sort
+fi
+#
+perfData=Yes
+debugSw=no
+argString=""
+tries=1
+#
+# Process input arguments (one is required for the interface name of interest)
+for inputArg in $1 $2 $3 $4 $5
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+   displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo "##### Top of mainline #####"
+         debugSw=yes
+         set -x
+      else
+         /bin/echo "$inputArg" | /bin/grep "=" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            /bin/echo "$inputArg" | /bin/grep "tries=" > /dev/null
+            if [ $? -eq 0 ]
+            then
+               oldIFS="$IFS"
+               IFS="="
+               set -- $inputArg
+               tries=$2
+               IFS="$oldIFS"
+#              Is the tries value numeric?
+               triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+               if [ "$triesHold" != "" ]
+               then
+#                 The tries value is not numeric, default to 1
+                  tries=1
+               fi
+            else
+               argString="$inputArg"
+               perfDataCheck
+               argString=$(/bin/echo ${argString} | /bin/sed 's/,/ /g')
+            fi
+         else
+            ifaceString=$inputArg
+         fi
+      fi
+   fi
+done
+#
+# Determine path for the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaNginx_lastStatus
+/bin/cat /dev/null > $lastStatus
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" >> $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the Nagios target host
+# from ${homeDir}/Nagios_hostname.dta, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+exitCode=0
+tab="	"
+#
+logPaths=${homeDir}/nginx_paths.dta
+/usr/bin/test -s $logPaths
+if [ $? -ne 0 ]
+then
+   /bin/echo "${logPaths} file null or absent, exiting" >> $lastStatus
+   exit 1
+fi
+#
+serviceSetup=No
+IFS="
+"
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   nagiosMsg="StopAllMonitoring file encountered, exiting"
+   /bin/echo "$nagiosMsg" >> $lastStatus
+   exitCode=0
+   for logPath in `/bin/cat $logPaths`
+   do
+      toNagios
+   done
+   exit 0
+fi
+#
+# Check for prior process(es) still running, exit if so
+processCount=$(/bin/ps -ef | /bin/grep nscaNginx | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $processCount -gt 2 ]
+then
+   nagiosMsg="prior execution not completed, exiting"
+   /bin/echo "$nagiosMsg" >> $lastStatus
+   exitCode=0
+   for logPath in `/bin/cat $logPaths`
+   do
+      toNagios
+   done
+   exit 0
+fi
+#
+# Has the list of monitored paths changed?
+savedPaths=/tmp/nscaNginx_paths_saved
+/usr/bin/test -f $savedPaths
+if [ $? -eq 0 ]
+then
+   /usr/bin/diff $savedPaths $logPaths > /dev/null
+   if [ $? -ne 0 ]
+   then
+#     The monitored path list has changed
+      serviceSetup=Yes
+      /bin/cat $logPaths > $savedPaths
+   fi
+else
+   /bin/cat $logPaths > $savedPaths
+fi
+#
+# Has the number of Nagios check attempts changed?
+savedTries=/tmp/nscaNginx_tries_saved
+/usr/bin/test -s $savedTries
+if [ $? -eq 0 ]
+then
+   read savedTriesData < $savedTries
+   if [ "$tries" != "$savedTriesData" ]
+   then
+#     The number of check attempts has changed
+      serviceSetup=Yes
+      /bin/echo "$tries" > $savedTries
+   fi
+else
+   /bin/echo "$tries" > $savedTries
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_Nginx
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   serviceSetup=Yes
+   capturedSvc="ACCUMULATE START"
+   toNagios
+   /bin/sleep 10
+else
+#  Nagios service setup previously triggered
+   serviceSetup=No
+fi
+#
+# Setup thresholds
+highCritThresh=X
+highWarnThresh=X
+averageCritThresh=X
+averageWarnThresh=X
+medianWarnThresh=X
+medianCritThresh=X
+#
+thresholds=""
+if [ "$argString" != "" ]
+then
+   argStringHold=$(/bin/echo $argString | /bin/sed 's/ /,/g')
+   thresholds=", thresholds: $argStringHold"
+   for argNum in $argString
+   do
+      argType=$(/bin/echo $argNum | $cut -f1 -d"=")
+      case $argType in
+        highCrit) highCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        highWarn) highWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        averageCrit) averageCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        averageWarn) averageWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        medianCrit) medianCritThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+        medianWarn) medianWarnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+      esac
+   done
+fi
+#
+for logPath in `/bin/cat $logPaths`
+do
+   /usr/bin/test -f $logPath
+   if [ $? -eq 0 ]
+   then
+      /usr/bin/test -s $logPath
+      if [ $? -eq 0 ]
+      then
+         logPathMod=$(/bin/echo "$logPath" | /bin/sed 's/\//-/g')
+         savedSizeFile=${homeDir}/nscaNginx_${logPathMod}_lastSize
+         workFile=/tmp/nscaNginx_${logPathMod}_work
+         SSE=$(/bin/date '+%s')
+         getMetrics
+         /usr/bin/test -s $workFile
+         if [ $? -eq 0 ]
+         then
+            processMetrics
+         else
+            nagiosMsg="no metrics captured from log, check log format, metric must be the last field in log lines"
+            toNagios
+         fi
+      else
+         nagiosMsg="${logPath} is null"
+         toNagios
+      fi
+   else
+      nagiosMsg="${logPath} is absent"
+      toNagios
+   fi
+done
+#
+if [ $serviceSetup = Yes ]
+then
+   capturedSvc="ACCUMULATE STOP"
+   /bin/sleep 10
+   toNagios
+fi
+#
+#
+/bin/echo "processing completed normally" >> $lastStatus
