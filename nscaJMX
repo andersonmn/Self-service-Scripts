@@ -1,0 +1,1319 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Change Log:"
+/bin/echo "----------:"
+/bin/echo "2015/12/23: allow for two new parameters to be put in the"
+/bin/echo "            \"jmx_appName.ini\" file, bypassCheck= and"
+/bin/echo "            nagiosHostname="
+/bin/echo ""
+/bin/echo "Script nscaJMX information and usage:"
+/bin/echo "-------------------------------------"
+/bin/echo " 1. captures JMX metrics for Linux systems only"
+/bin/echo ""
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or in /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo ""
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo ""
+/bin/echo " 4. the \"jmxterm-1.0-alpha-4-uber.jar\" utility must be present"
+/bin/echo "    in the home directory of the executing user"
+/bin/echo ""
+/bin/echo " 5. there must be an argument supplied to the script in the format"
+/bin/echo "    jmx_appName and there must be a file named jmx_appName.ini"
+/bin/echo "    in the executing user's home directory. The contents of"
+/bin/echo "    the file enable initial script execution to:"
+/bin/echo ""
+/bin/echo "    a. identify all available beans/attributes for a JVM"
+/bin/echo "    b. use file \"jmxBeanSelections_appName\" to select beans/"
+/bin/echo "       attributes for which metrics will be collected"
+/bin/echo "       (the \"jmxBeanSelections_appName\" file MUST be present"
+/bin/echo "        in the home directory of the executing user - the file may"
+/bin/echo "        be modified as needed to tailor the bean/attribute"
+/bin/echo "        selection as desired - see 13 below)"
+/bin/echo "    c. create a list of jmxterm-compatible selection parameters"
+/bin/echo "    d. copy the list of selection parameters to the"
+/bin/echo "       jmx_appName.dta file (the .dta file is used as the input"
+/bin/echo "       file when the NagiosServiceSetupTriggered_JMX_appName file"
+/bin/echo "       is present; else the .ini file is used as input)"
+/bin/echo "    e. run the jmxterm utility using the list of selection"
+/bin/echo "       parameters to create a list of needed Nagios services"
+/bin/echo "       for the mapping of JMX metrics from script retrieval"
+/bin/echo "       to Nagios (and interface to Graphite)"
+/bin/echo "    f. trigger auto-deployment of needed services in Nagios"
+/bin/echo "       for hosts/services not already manually established in"
+/bin/echo "       Nagios configuration"
+/bin/echo "       (to re-trigger auto-deployment when there are changes"
+/bin/echo "        to available beans/attributes and/or when change"
+/bin/echo "        to selected entities is desired, remove the"
+/bin/echo "        NagiosServiceSetupTriggered_JMX_appName file - auto-)"
+/bin/echo "        deployment is also re-triggered by changing the"
+/bin/echo "        \"jmxBeanSelection_appName\" file)"
+/bin/echo ""
+/bin/echo " 6. when multiple JVM's are hosted on a given server, multiple"
+/bin/echo "    jmx_appName files may be present in the home directory"
+/bin/echo "    of the executing user, but each must be processed with"
+/bin/echo "    separate invocations of the nscaJMX script"
+/bin/echo ""
+/bin/echo " 7. contents of the jmx_appName.ini file must be in the format"
+/bin/echo "    (case sensitive)(this applies to initial execution):"
+/bin/echo ""
+/bin/echo "      app=validNagiosServiceGroup (required)"
+/bin/echo "      userID=accountForAccessToJMX (optional)"
+/bin/echo "      password=passwordForAccessToJMX (optional)"
+/bin/echo "      url=service:jmx:rmi:///jndi/rmi://hostFQDN:jmxPort/jmxrmi"
+/bin/echo "         (required)"
+/bin/echo "      bypassCheck=routineName argument (optional)"
+/bin/echo "      nagiosHostname=nagiosHost (optional)"
+/bin/echo ""
+/bin/echo "    a. the \"app\" value must be a valid Nagios \"service group\""
+/bin/echo "       (e.g., \"Jobs\", \"Identity\" - please contact the"
+/bin/echo "        monitoring administrator for valid selection options)"
+/bin/echo "    b. the \"userID\" and \"password\" entries are only required"
+/bin/echo "       when an account/password are required for JMX access"
+/bin/echo "    c. the url string must be supplied with a valid host FQDN"
+/bin/echo "       (\"hostFQDN\") and JMX port (\"jmxPort\")"
+/bin/echo "    d. bypassCheck - if used, this value must be the name of a"
+/bin/echo "       routine in the executing user's home directory used to"
+/bin/echo "       determine whether or not this particular check should be"
+/bin/echo "       bypassed; the routine must \"echo\" out a value of YES,"
+/bin/echo "       Yes, or yes (to bypass the check, or NO, No, or no (to"
+/bin/echo "       execute the check - for example:"
+/bin/echo "                  if a process should always be running except"
+/bin/echo "                  when something else is running (like a"
+/bin/echo "                  cold backup), then a bypass check routine"
+/bin/echo "                  could be used to determine if that"
+/bin/echo "                  \"something else\" is running or not; if so"
+/bin/echo "                  the routine can output a \"yes\" (to bypass"
+/bin/echo "                  the check) or \"no\" to NOT bypass and do"
+/bin/echo "                  the check"
+/bin/echo "       (note that an optional argument may be supplied to"
+/bin/echo "        execution of the bypassCheck routine)"
+/bin/echo "    e. if metrics should be associated with a Nagios hostname"
+/bin/echo "       other than the local hostname and other than the name"
+/bin/echo "       found in the Nagios_hostname.dta file (if present) then"
+/bin/echo "       this parameter is used to specify the desired Nagios host"
+/bin/echo ""
+/bin/echo " 8. an alternative method to that explained in 3. above for the"
+/bin/echo "    re-trigger of Nagios service auto-deployment is to supply"
+/bin/echo "    the value \"serviceDump\" as an argument to the script"
+/bin/echo ""
+/bin/echo " 9. accepts \"tries=n\" argument (case insensitive) to be used"
+/bin/echo "    as the \"max_check_attempts\" value in the auto-deployed"
+/bin/echo "    Nagios service (if not supplied, default is 1)"
+/bin/echo "    Explanation - if there are warning and/or critical thresholds"
+/bin/echo "    in effect for this monitor, and if the warning/critical action"
+/bin/echo "    (email/alert) should occur immediately upon a threshold being"
+/bin/echo "    met/exceeded, then don't supply this argument, or supply"
+/bin/echo "    \"tries=1\". However, if you want a threshold-met/exceeded"
+/bin/echo "    condition to persist for some duration before action is taken,"
+/bin/echo "    then use this argument to define the desired duration."
+/bin/echo "    The \"duration\" is actually the number of consecutive times"
+/bin/echo "    the Nagios service must be set to a WARNING or CRITICAL state"
+/bin/echo "    in order to trigger an action. For example, if this script"
+/bin/echo "    is run every five minutes and a non-OKAY condition must"
+/bin/echo "    persist for ten minutes before notification takes place,"
+/bin/echo "    then use \"tries=3\":"
+/bin/echo "    a. problem state onset occurs - Nagios check attempts=1"
+/bin/echo "    b. 5 minutes later, problem state persists - check attempts=2"
+/bin/echo "    c. 5 minutes later, problem state persists - check attempts=3,"
+/bin/echo "       action (email/alert) is triggered"
+/bin/echo ""
+/bin/echo "10. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo ""
+/bin/echo "11. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo ""
+/bin/echo "12. if expected execution results are not observed, check contents"
+/bin/echo "    of the \"nscaProcess_lastStatus_appName\" file in the executing"
+/bin/echo "    user's home directory"
+/bin/echo ""
+/bin/echo "13. The jmxBeanSelections_appName file is used by the nscaJMX script"
+/bin/echo "    for its first execution or in subsequent executions when re-"
+/bin/echo "    deployment of Nagios services is invoked, either by removal of"
+/bin/echo "    the \"trigger\" file (see 4.g above) or when there is a change to"
+/bin/echo "    the jmxBeanSelections_appName file. For executions of nscaJMX in"
+/bin/echo "    which Nagios re-deployment is invoked, the script must create"
+/bin/echo "    \"get\" parameters for desired bean-attribute value retrieval"
+/bin/echo "    using the \"jmxterm\" utility, and establish any needed warn/crit"
+/bin/echo "    thresholds. The jmxBeanSelections_appName file defines the beans"
+/bin/echo "    of interest, the attributes of interest for the selected beans,"
+/bin/echo "    and any associated thresholds. The \"default\", un-customized"
+/bin/echo "    file (see file \"jmxBeanSelections_example\") contains numerous"
+/bin/echo "    beans of general interest for most any JVM and specifies related"
+/bin/echo "    attributes and suggested thresholds. IMPORTANT - IF YOU SUPPLY"
+/bin/echo "    ATTRIBUTE NAMES WHICH ARE INVALID FOR A PARTICULAR BEAN, NO"
+/bin/echo "    JMX METRICS WILL BE RETRIEVED FOR ANY SPECIFIED BEANS AND NAGIOS"
+/bin/echo "    SERVICES WILL NOT BE DEPLOYED! If you are in doubt about what"
+/bin/echo "    valid bean/attribute combinations are available, please see the"
+/bin/echo "    monitoring administrator."
+/bin/echo ""
+/bin/echo "    Let's refer to the jmxBeanSelections_appName file as the JBS file,"
+/bin/echo "    and let's assume an execution of nscaJMX in which related Nagios"
+/bin/echo "    services are to be deployed or re-deployed. For such an execution,"
+/bin/echo "    the script will retrieve a list of all available beans for the JVM"
+/bin/echo "    in question and use the JBS file entries to create/update the"
+/bin/echo "    jmx_appName.dta file. This .dta file contains the needed \"get\""
+/bin/echo "    parameters and associated thresholds."
+/bin/echo ""
+/bin/echo "    Each JBS line has three pipe-delimited fields -"
+/bin/echo ""
+/bin/echo "    field 1: specifies the string used to find matching lines in the"
+/bin/echo "             bean list"
+/bin/echo "    field 2: contains one or more \"@\"-delimited clauses, each clause"
+/bin/echo "             names a desired attribute and its thresholds; thresholds"
+/bin/echo "             such as \"warn=1,crit=2\" are specified between \"~\""
+/bin/echo "             characters which are transformed into pipe-symbols in"
+/bin/echo "             the output"
+/bin/echo "    field 3: when used, specifies value such as \"not=XXX,YYY\", this"
+/bin/echo "             causes lines containing XXX or YYY to be excluded despite"
+/bin/echo "             matching the field 1 value"
+/bin/echo ""
+/bin/echo "    Example 1:"
+/bin/echo "    ----------"
+/bin/echo ""
+/bin/echo "    sample JBS line:"
+/bin/echo "       type=ClassLoading|LoadedClassCount~~@||"
+/bin/echo ""
+/bin/echo "      The script"
+/bin/echo "    - will look for a line in the bean list containing the value"
+/bin/echo "      \"type=ClassLoading\" (from the first JBS field)"
+/bin/echo "    - will use matching lines to create a \"get\" parameter for the"
+/bin/echo "      attribute \"LoadedClassCount\" (from the second JBS field)"
+/bin/echo "    - will use the tilde characters in the attribute clause to supply"
+/bin/echo "      needed pipe delimiters in the output"
+/bin/echo "    - will ignore field three and not exclude any bean line which"
+/bin/echo "      matches the field 1 value"
+/bin/echo "    - produces this output in the .dta file:"
+/bin/echo ""
+/bin/echo "      get -s -b java.lang:type=ClassLoading LoadedClassCount||"
+/bin/echo ""
+/bin/echo "    Example 2:"
+/bin/echo "    ----------"
+/bin/echo ""
+/bin/echo "    sample JBS line:"
+/bin/echo "       type=jdbc-connection-pool|numconnused-current~warn=4~@"
+/bin/echo "         @waitqueuelength-count~warn=1,crit=2~@|not=CallFlowPool|"
+/bin/echo "             (please note the line wrap)"
+/bin/echo ""
+/bin/echo "      The script"
+/bin/echo "    - will look for a line in the bean list containing the value"
+/bin/echo "      \"type=jdbc-connection-pool\" (from the first JBS field)"
+/bin/echo "    - will use matching lines to create a \"get\" parameter for the"
+/bin/echo "      attributes \"numconnused-current\" and \"waitqueuelength-"
+/bin/echo "      count\" (from the second JBS field)"
+/bin/echo "    - will exclude lines containing \"CallFlowPool\""
+/bin/echo "    - produces this output in the .dta file (number of output lines"
+/bin/echo "      will vary with the JVM, here is a shortened GOG-A example):"
+/bin/echo ""
+/bin/echo "      get -s -b com.sun.appserv:category=monitor,name=actmgmt,"
+/bin/echo "      server=gogprod1a,type=jdbc-connection-pool numconnused-current"
+/bin/echo "      |warn=4|"
+/bin/echo "      get -s -b com.sun.appserv:category=monitor,name=actmgmt,"
+/bin/echo "      server=gogprod1a,type=jdbc-connection-pool waitqueuelength-count"
+/bin/echo "      |warn=1,crit=2|"
+/bin/echo "      get -s -b com.sun.appserv:category=monitor,name=directory,"
+/bin/echo "      server=gogprod1a,type=jdbc-connection-pool numconnused-current"
+/bin/echo "      |warn=4|"
+/bin/echo "      get -s -b com.sun.appserv:category=monitor,name=directory,"
+/bin/echo "      server=gogprod1a,type=jdbc-connection-pool waitqueuelength-count"
+/bin/echo "      |warn=1,crit=2|"
+/bin/echo ""
+/bin/echo "    Example 3:"
+/bin/echo "    ----------"
+/bin/echo ""
+/bin/echo "    sample JBS line:"
+/bin/echo "       type=Memory|HeapMemoryUsage~~~~~@NonHeapMemoryUsage~~~~~@"
+/bin/echo "         ObjectPendingFinalizationCount~warn=10~@|not=MemoryPool,"
+/bin/echo "           MemoryManager|"
+/bin/echo ""
+/bin/echo "    The script looks for lines in the bean list containing the string"
+/bin/echo "    \"type=Memory\", excludes lines containing \"MemoryPool\" and"
+/bin/echo "    \"MemoryManager\" and produces this output in the .dta file:"
+/bin/echo ""
+/bin/echo "       get -s -b java.lang:type=Memory HeapMemoryUsage|||||"
+/bin/echo "       get -s -b java.lang:type=Memory NonHeapMemoryUsage|||||"
+/bin/echo "       get -s -b java.lang:type=Memory ObjectPendingFinalizationCount"
+/bin/echo "       |warn=10|"
+/bin/echo ""
+/bin/echo "       Note - for HeapMemoryUsage and NonHeapMemoryUsage output above,"
+/bin/echo "       there are five trailing pipe-symboles to delimit four threshold"
+/bin/echo "       fields; this is because there are actually four metric values"
+/bin/echo "       output for each, and each of those may have a threshold"
+/bin/echo "       specified"
+/bin/echo ""
+/bin/echo "    It may be useful to peruse JBS files currently in use and compare"
+/bin/echo "    them to their related .dta files for a more thorough understanding"
+/bin/echo "    of this mechanism."
+exit 0
+}
+#
+jmxDump ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### jmxDump #####"
+   set -x
+fi
+#
+commandFile=/tmp/jmxCommands_${app}
+/bin/echo beans > $commandFile
+otherBeans=/tmp/otherBeans_${app}
+/bin/cat /dev/null > $otherBeans
+userID=""
+password=""
+url=""
+IFS="
+"
+for connectLine in `/bin/cat $jmxStarterFile`
+do
+   oldIFS="$IFS"
+   IFS="="
+   set -- $connectLine
+   label=$1
+   value=$2
+   IFS="$oldIFS"
+   case $label in
+        userID) userID=$value ;;
+      password) password=$value ;;
+           url) url=$value ;;
+   esac
+done
+#
+if [ "$userID" != "" ]
+then
+   java -jar $jmxtermPath -l $url -u $userID -p $password -n -i $commandFile > $beanListFile 2>/dev/null
+else
+   java -jar $jmxtermPath -l $url -n -i $commandFile > $beanListFile 2>/dev/null
+fi
+}
+#
+selectBeans ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### selectBeans #####"
+   set -x
+fi
+#
+getParms=${workDir}/jmxGetWork_${app}
+#
+# The file of "get" parameters also contains account/password (if any) and
+# the URI, but these are unlabel, unlike the "Starter" file
+/bin/cat $jmxStarterFile | /bin/sed 's/userID=//g' | /bin/sed 's/password=//g' | /bin/sed 's/url=//g' > $getParms
+beansMatchedFile=${workDir}/jmxBeansMatched_${app}
+IFS="
+"
+for selectLine in `/bin/cat $selectableBeans`
+do
+   oldIFS="$IFS"
+   IFS="|"
+   set -- $selectLine
+   equalArg=$1
+   attributeField=$2
+   notArgsField=$3
+   IFS="$oldIFS"
+   if [ "$notEqualArg" = "" ]
+   then
+      /bin/grep "$equalArg" ${beanListFile} > $beansMatchedFile
+   fi
+   /usr/bin/test -s $beansMatchedFile
+   if [ $? -eq 0 ]
+   then
+      notArgs=`/bin/echo "$notArgsField" | /bin/sed 's/not=//g' | /bin/sed 's/,/|/g'`
+      for beanLine in `/bin/cat $beansMatchedFile`
+      do
+         if [ "$notArgs" = "" ]
+         then
+            beanLineSelectable=Yes
+         else
+            /bin/echo "$beanLine" | /bin/grep -E "${notArgs}" > /dev/null
+            if [ $? -ne 0 ]
+            then
+               beanLineSelectable=Yes
+            else
+               beanLineSelectable=No
+            fi
+         fi
+         if [ $beanLineSelectable = Yes ]
+         then
+            beanLine=`/bin/echo "${beanLine}" | /bin/sed 's/ /\\\ /g'`
+            attributeCount=0
+            attributeClause=X
+            while [ "$attributeClause" != "" ]
+            do
+               ((attributeCount = attributeCount + 1))
+               attributeClause=`/bin/echo "$attributeField" | $cut -f$attributeCount -d"@"`
+               if [ "$attributeClause" != "" ]
+               then
+                  attributeClauseHold=$attributeClause
+                  attributeParm=`/bin/echo "$attributeClause" | /bin/sed 's/\~/|/g'`
+                  getCommand="get -s -b ${beanLine} ${attributeParm}"
+                  /bin/echo "$getCommand" >> $getParms
+               fi
+            done
+         fi
+      done
+   fi
+done
+#
+/bin/grep "get -s -b" $getParms > /dev/null
+if [ $? -ne 0 ]
+then
+   exitMsg="no get parameters were produced, exiting"
+   /bin/echo "$exitMsg" > $lastStatus
+   exit 0
+fi
+#
+mv $getParms ${homeDir}/${parmFileRoot}.dta
+serviceDump=Yes
+}
+#
+jmxSetup ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### jmxSetup #####"
+   set -x
+fi
+#
+serviceGroup=$(/bin/grep "app=" ${inFile} | $cut -f2 -d"=")
+if [ "$serviceGroup" = "" ]
+then
+   /bin/echo "no value identified for use as Nagios service group, app= entry required in ${inFile}, exiting" > $lastStatus
+   exit 1
+fi
+jmxStarterFile=/tmp/jmxConnectParms_${app}
+/bin/cat $inFile | /bin/grep -v "app=" | /bin/grep -v "nagiosHostname=" | /bin/grep -v "bypassCheck=" > $jmxStarterFile
+beanListFile=/tmp/jmxBeanList_${app}
+/bin/cat /dev/null > $beanListFile
+jmxDump
+/usr/bin/test -s $beanListFile
+if [ $? -eq 0 ]
+then
+   selectBeans
+else
+   /bin/echo "no list of available beans and attributes was produced, exiting" > $lastStatus
+   exit 1
+fi
+}
+#
+toNagios ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### toNagios #####"
+   set -x
+fi
+#
+if [ "$serviceDump" = "No" ]
+then
+   if [ $connectType = Batched ]
+   then
+      /bin/echo "$nscaPkt" >> $nscaPacketFile
+   else
+      /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+   fi
+else
+   /bin/echo ${nagiosSvcHoldMod} >> /tmp/jmxSvcs_${app}
+fi
+}
+#
+exitRoutine ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### exitRoutine #####"
+   set -x
+fi
+#
+#$rm $outFile
+#$rm $getParms
+/bin/rm $backslashWorkFile
+if [ "$savedMsg" != "" ]
+then
+   if [ "$serviceDump" = "No" ]
+   then
+      /bin/echo "$savedMsg"
+      exit $savedCode
+   else
+      /bin/echo "$savedSvc" >> /tmp/jmxSvcs_${app}
+   fi
+else
+   exitMsg="JMX mbean retrieval script executed"
+   /bin/echo "$exitMsg" > $lastStatus
+   nscaPkt="${nagiosHost}${tab}JMX: ${app} metric collection status${tab}0${tab}${exitMsg}"
+   toNagios
+   /usr/bin/test -s $nscaPacketFile
+   if [ $? -eq 0 ]
+   then
+      /bin/cat $nscaPacketFile | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+   fi
+   exit 0
+fi
+}
+#
+formatNscaSvcPkt ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### formatNscaSvcPkt #####"
+   set -x
+fi
+#
+serviceInfo="JMX@${nagiosHost}@${nagiosHostType}@${serviceGroup}@${jmxSvc}@${tries}@${app}@"
+nscaPkt="${nscaTarget}${tab}Service Setup Capture${tab}1${tab}${serviceInfo}"
+toNagios
+}
+#
+sendSvcsToNagios ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### sendSvcsToNagios #####"
+   set -x
+fi
+#
+/usr/bin/test -s /etc/redhat-release
+if [ $? -eq 0 ]
+then
+   /bin/grep CentOS /etc/redhat-release > /dev/null
+   if [ $? -ne 0 ]
+   then
+      /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         nagiosHostType=Unknown
+      else
+         nagiosHostType=RedHat
+      fi
+   else
+      nagiosHostType=CentOS
+   fi
+else
+   /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+   if [ $? -eq 0 ]
+   then
+      nagiosHostType=Ubuntu
+   else
+      nagiosHostType=Unknown
+   fi
+fi
+#
+serviceDump=No
+connectType=NotBatched
+jmxSvc="ACCUMULATE START"
+formatNscaSvcPkt
+/bin/sleep 10
+for jmxSvc in `/bin/cat /tmp/jmxSvcs_${app}`
+do
+   formatNscaSvcPkt
+done
+jmxSvc="JMX: ${app} metric collection status"
+formatNscaSvcPkt
+jmxSvc="ACCUMULATE STOP"
+/bin/sleep 10
+formatNscaSvcPkt
+}
+#
+perfDataCheck ()
+{
+if [ "$debugSw" = "Yes" ]
+then
+   /bin/echo "##### perfDataCheck #####"
+   set -x
+fi
+#
+/bin/echo $thresholdArgs | /bin/grep noPerfData > /dev/null
+if [ $? -eq 0 ]
+then
+   perfData=No
+   thresholdArgs=`/bin/echo $thresholdArgs | /bin/sed 's/noPerfData//g' | /bin/sed 's/,,/,/g'`
+else
+   perfData=Yes
+fi
+}
+#
+nagiosSvcControlBreak ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### nagiosSvcControlBreak #####"
+   set -x
+fi
+#
+case $codeHold in
+   0) status=OK ;;
+   1) status=WARNING ;;
+   2) status=CRITICAL ;;
+esac
+if [ "$perfdataString" != "" ]
+then
+   perfdataStringLength=${#perfdataString}
+   ((newPerfdataStringLength = perfdataStringLength - 1))
+   perfdataString=`/bin/echo "$perfdataString" | $cut -c1-$newPerfdataStringLength`
+   if [ $status = OK ]
+   then
+      msg="${dataString2} | twpJMX ${status} ${perfdataString}"
+   else
+      msg="JMX ${status}: ${dataString2} | twpJMX ${status} ${perfdataString}"
+   fi
+else
+   if [ $status = OK ]
+   then
+      msg="${dataString2}"
+   else
+      msg="JMX ${status}: ${dataString2}"
+   fi
+fi
+#if [ "$nagiosSvcHold" = "JMX: $app java.lang Compilation" ]
+#then
+#   savedMsg="$msg"
+#   savedCode=$codeHold
+#   savedSvc="JMX: $app java.lang Compilation"
+#else
+   nagiosSvcHoldMod=`/bin/echo $nagiosSvcHold | /bin/sed 's/=/ /g'`
+   nscaPkt="${nagiosHost}${tab}${nagiosSvcHoldMod}${tab}${codeHold}${tab}${msg}"
+   toNagios
+#fi
+}
+#
+setupHoldFields ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### setupHoldFields #####"
+   set -x
+fi
+#
+set -- $line
+nagiosSvcHold=$1
+codeHold=$2
+dataString1=$3
+perfDataHold=$4
+thresholdDisp=$5
+IFS="$newLine"
+if [ "$thresholdDisp" = "" ]
+then
+   dataString2=$dataString1
+else
+   dataString2="${dataString1} (${thresholdDisp})"
+fi
+if [ "$perfDataHold" = "Yes" ]
+then
+   perfdataString="${dataString1} "
+else
+   perfdataString=""
+fi
+}
+#
+consolidateMetricsBySvc ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### consolidateMetricsBySvc #####"
+   set -x
+fi
+#
+firstTime=Yes
+for line in `/bin/cat $workFile`
+do
+   IFS="$pipe"
+   if [ $firstTime = Yes ]
+   then
+      setupHoldFields
+      firstTime=No
+   else
+      set -- $line
+      nagiosSvc=$1
+      if [ $nagiosSvc = $nagiosSvcHold ]
+      then
+         metricData=$3
+         thresholdDisp=$5
+         dataString1="${dataString1}, ${metricData}"
+         if [ "$thresholdDisp" = "" ]
+         then
+            dataString2="${dataString2}, ${metricData}"
+         else
+            dataString2="${dataString2}, ${metricData} (${thresholdDisp})"
+         fi
+         exitCode=$2
+         if [ $exitCode -gt $codeHold ]
+         then
+            codeHold=$exitCode
+         fi
+         perfData=$4
+         if [ $perfData = Yes ]
+         then
+            perfDataHold=$perfData
+            perfdataString="${perfdataString}${metricData} "
+         fi
+      else
+         IFS="$newLine"
+         nagiosSvcControlBreak
+         IFS="$pipe"
+         setupHoldFields
+      fi
+   fi
+   IFS="$newLine"
+done
+nagiosSvcControlBreak
+#
+}
+#
+calcRate ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### calcRate #####"
+   set -x
+fi
+#
+histFile=${workDir}/jmx_${app}_${histType}
+/usr/bin/test -f $histFile
+if [ $? -eq 0 ]
+then
+   read histLine < $histFile
+   IFS="$pipe"
+   set -- $histLine
+   lastSSE=$1
+   lastVal=$2
+   IFS="$newLine"
+   if [ $var -ge $lastVal ]
+   then
+      ((sseDiff = currSSE - lastSSE))
+      minutes=`/bin/echo $sseDiff 60 | $awk '{printf "%4.2f",($1/$2)}' | /bin/sed 's/ //g'`
+      ((valDiff = var - lastVal))
+      /bin/echo "$currSSE|$var|" > $histFile
+      var=`/bin/echo $valDiff $minutes | $awk '{printf "%4.2f",($1/$2)}' | /bin/sed 's/ //g'`
+   else
+      /bin/echo "$currSSE|$var|" > $histFile
+      var="0.00"
+   fi
+else
+   /bin/echo "$currSSE|$var|" > $histFile
+   var="0.00"
+fi
+}
+#
+matchToArrayEntries ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### matchToArrayEntries #####"
+   set -x
+fi
+#
+nsIndex=$lineCount
+nagiosArrayLine=`print ${nsArray[$nsIndex]}`
+IFS="$pipe"
+set -- $nagiosArrayLine
+nagiosSvc=$1
+metricName=$2
+thresholdArgs=$3
+calcRate=$4
+IFS="$newLine"
+#
+if [ $calcRate = Yes ]
+then
+   histType="${nagiosSvc}_${metricName}"
+   histType=`/bin/echo $histType | /bin/sed 's/JMX://g' | /bin/sed "s/$app//g" | /bin/sed 's/ //g' | /bin/sed 's/\//-/g'`
+   calcRate
+fi
+#
+statCode=0
+if [ "$thresholdArgs" != "" ]
+then
+   perfDataCheck
+   thresholdArgsLength=${#thresholdArgs}
+   taLastChar=`/bin/echo $thresholdArgs | $cut -c$thresholdArgsLength`
+   if [ "$taLastChar" = "," ]
+   then
+      ((newLength = thresholdArgsLength - 1))
+      thresholdArgs=`/bin/echo $thresholdArgs | $cut -c1-$newLength`
+   fi
+   thresholdDisp=$thresholdArgs
+   thresholdArgs=`/bin/echo $thresholdArgs | /bin/sed 's/,/ /g'`
+else
+   perfData=Yes
+   thresholdDisp=""
+fi
+warnThresh=X
+critThresh=X
+if [ "$thresholdArgs" != "" ]
+then
+   IFS="$space"
+   for thNum in $thresholdArgs
+   do
+      thType=`/bin/echo $thNum | $cut -f1 -d"="`
+      case $thType in
+         warn) warnThresh=`/bin/echo $thNum | $cut -f2 -d"="` ;;
+         crit) critThresh=`/bin/echo $thNum | $cut -f2 -d"="` ;;
+      esac
+   done
+fi
+IFS="$newLine"
+exitCode=0
+for thType in warn crit
+do
+   case $thType in
+      warn) threshold=$warnThresh
+            statCode=1 ;;
+      crit) threshold=$critThresh
+            statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $var -ge $threshold ]
+      then
+         exitCode=$statCode
+      fi
+   fi
+done
+/bin/echo $thresholdArgs | /bin/grep okayMsg= > /dev/null
+if [ $? -ne 0 ]
+then
+   valueMsg="${metricName}=${var}"
+else
+   okayMsg=`/bin/echo $thresholdArgs | $cut -f2 -d"="`
+   if [ "$var" = "$okayMsg" ]
+   then
+      exitCode=0
+   else
+      exitCode=1
+   fi
+   valueMsg=${var}
+fi
+/bin/echo "${nagiosSvc}|${exitCode}|${valueMsg}|${perfData}|${thresholdDisp}|" >> $workFile
+}
+#
+formatArrayEntry ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### formatArrayEntry #####"
+   set -x
+fi
+#
+((nsIndex = nsIndex + 1))
+thresholdArgs=`/bin/echo $parmDetailLine | $cut -f$thresholdField -d"|"`
+nsArrayEntry="${nagiosSvc}|${metricName}|${thresholdArgs}|$calcRate|"
+nsArray[$nsIndex]="$nsArrayEntry"
+}
+#
+hostnameOverrideCheck ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### hostnameOverrideCheck #####"
+   set -x
+fi
+#
+nagiosHostnameLine=$(/bin/grep nagiosHostname= ${inFile})
+if [ "$nagiosHostnameLine" != "" ]
+then
+   oldIFS="$IFS"
+   IFS="="
+   set -- $nagiosHostnameLine
+   nagiosHostname=$2
+   IFS="$oldIFS"
+   if [ "$nagiosHostname" != "" ]
+   then
+      nagiosHost=$nagiosHostname
+   fi
+fi
+}
+#
+bypassCheck ()
+{
+if [ $debugSw = Yes ]
+then
+   /bin/echo "##### bypassCheck #####"
+   set -x
+fi
+#
+bypassCheckLine=$(/bin/grep bypassCheck= ${inFile})
+if [ "$bypassCheckLine" != "" ]
+then
+   oldIFS="$IFS"
+   IFS="="
+   set -- $bypassCheckLine
+   bypassCheck=$2
+   IFS=" "
+   set -- $bypassCheck
+   bypassCheck=$1
+   bypassCheckArg=$2
+   IFS="$oldIFS"
+   /usr/bin/test -s ${homeDir}/${bypassCheck}
+   if [ $? -eq 0 ]
+   then
+      bypassSw=$(${homeDir}/${bypassCheck} ${bypassCheckArg})
+   else
+      bypassSw=No
+   fi
+else
+   bypassSw=No
+fi
+case $bypassSw in
+   NO|No|no)
+     hostnameOverrideCheck ;;
+   *)
+     /bin/echo "bypassCheck indicates this check must be bypassed" > $lastStatus
+     exit 0 ;;
+esac
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+/usr/bin/test -f /bin/sort
+if [ $? -eq 0 ]
+then
+   sort=/bin/sort
+else
+   sort=/usr/bin/sort
+fi
+#
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+#
+newLine="
+"
+pipe="|"
+underscore="_"
+space=" "
+IFS="$newLine"
+#
+debugSw=No
+tries=1
+serviceDump=No
+for inputArg in $1 $2 $3 $4 $5
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+      displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         debugSw=Yes
+         serviceDump=No
+         /bin/echo "##### Mainline #####"
+         set -x
+      else
+         if [ "$inputArg" = "serviceDump" ]
+         then
+            serviceDump=Yes
+         else
+            /bin/echo "$inputArg" | /bin/grep -i "tries=" > /dev/null
+            if [ $? -eq 0 ]
+            then
+               oldIFS="$IFS"
+               IFS="="
+               set -- $inputArg
+               tries=$2
+               IFS="$oldIFS"
+               triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+               if [ "$triesHold" != "" ]
+               then
+                  tries=1
+               fi
+            else
+               parmFileRoot=$inputArg
+            fi
+         fi
+      fi
+   fi
+done
+#
+savedMsg=""
+savedCode=""
+#
+workDir=/tmp
+perfData=Yes
+pid=$$
+backslashWorkFile=/tmp/backslashWork_${pid}
+tab='	'
+#
+# Capture the name to use as the target host in Nagios
+# from the ${homeDir}/Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+IFS="$underscore"
+set -- $parmFileRoot
+app=$2
+IFS="$newLine"
+#
+lastStatus=${homeDir}/nscaJMX_lastStatus_${app}
+selectableBeans=${homeDir}/jmxBeanSelections_${app}
+#
+# Determine the path to the send_nsca and send_nsca.cfg modules, if any
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+connectType=Batched
+nscaPacketFile=${homeDir}/nscaJMX_nscaPackets_${app}
+/bin/cat /dev/null > $nscaPacketFile
+#
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   exitMsg="StopAllMonitoring file encountered, exiting"
+   /bin/echo "$exitMsg" > $lastStatus
+   nscaPkt="${nagiosHost}${tab}JMX: ${app} metric collection status${tab}0${tab}${exitMsg}"
+   toNagios
+   exit 0
+fi
+#
+processCount=$(/bin/ps -ef | /bin/grep nscaJMX | /bin/grep "$parmFileRoot" | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $processCount -gt 3 ]
+then
+   exitMsg="prior execution not completed, exiting"
+   /bin/echo "$exitMsg" > $lastStatus
+   nscaPkt="${nagiosHost}${tab}JMX: ${app} metric collection status${tab}0${tab}${exitMsg}"
+   toNagios
+   exit 0
+fi
+#
+# Determine the path to the jmxterm utility, if any
+jmxtermFound=No
+for jmxtermDir in $homeDir /usr/local/bin /local/jmxterm
+do
+   /usr/bin/test -s ${jmxtermDir}/jmxterm-1.0-alpha-4-uber.jar
+   if [ $? -eq 0 ]
+   then
+      jmxtermPath=${jmxtermDir}/jmxterm-1.0-alpha-4-uber.jar
+      jmxtermFound=Yes
+      break
+   fi
+done
+if [ $jmxtermFound = No ]
+then
+   exitMsg="JMX metrics retrieval not possible, jmxterm utility not present"
+   /bin/echo "$exitMsg" > $lastStatus
+   nscaPkt="${nagiosHost}${tab}JMX: ${app} metric collection status${tab}0${tab}${exitMsg}"
+   toNagios
+   exit 0
+fi
+#
+serviceSetup=No
+#
+savedBeanSelections=/tmp/nscaJMX_savedBeanSelections_${app}
+/usr/bin/test -f $savedBeanSelections
+if [ $? -eq 0 ]
+then
+   /usr/bin/diff $savedBeanSelections $selectableBeans > /dev/null
+   if [ $? -ne 0 ]
+   then
+      serviceSetup=Yes
+      /bin/cat $selectableBeans > $savedBeanSelections
+   fi
+else
+   /bin/cat $selectableBeans > $savedBeanSelections
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_JMX_${app}
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   serviceSetup=Yes
+   /bin/touch $serviceSetupFlag
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios services
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      nagiosHostType=Unknown
+   fi
+   inFile="${parmFileRoot}.ini"
+   bypassCheck
+   jmxSetup
+fi
+#
+inFile="${parmFileRoot}.ini"
+bypassCheck
+inFile="${parmFileRoot}.dta"
+workFile=/tmp/checkJMX_${app}_work
+/bin/cat /dev/null > $workFile
+/bin/cat /dev/null > /tmp/jmxSvcs_${app}
+lineCount=$(/bin/cat ${inFile} | /usr/bin/wc -l)
+userID=$(/usr/bin/head -n1 ${inFile} | /usr/bin/tail -1)
+/bin/echo $userID | /bin/grep "service:jmx:rmi" > /dev/null
+if [ $? -ne 0 ]
+then
+   password=$(/usr/bin/head -n2 ${inFile} | /usr/bin/tail -1)
+   url=$(/usr/bin/head -n3 ${inFile} | /usr/bin/tail -1)
+   ((tailCount = lineCount - 3))
+else
+   userID=""
+   url=$(/usr/bin/head -n1 ${inFile} | /usr/bin/tail -1)
+   ((tailCount = lineCount - 1))
+fi
+parmDetails=${workDir}/${parmFileRoot}_parmDetails
+/usr/bin/tail -$tailCount $inFile | $sort > $parmDetails
+getParms=${workDir}/${parmFileRoot}_getParms
+/bin/cat $parmDetails | $cut -f1 -d"|" > $getParms
+#
+expectedOutFileLines=0
+nsIndex=0
+for parmDetailLine in `/bin/cat $parmDetails`
+do
+   nagiosSvc=`/bin/echo $parmDetailLine | $cut -f1 -d"|" | /bin/sed 's/get -d //g' | /bin/sed 's/get -s -b //g' | /bin/sed 's/ -s -b / /g' | /bin/sed 's/[:,]/ /g' | /bin/sed 's/category=monitor//g' | /bin/sed 's/name=//g' | /bin/sed 's/id=//g' | /bin/sed 's/type=//g' | /bin/sed 's/server=//g' | /bin/sed 's/worker=//g' | /bin/sed 's/pp=//g' | /bin/sed 's/ J2EEApplication=none//g' | /bin/sed 's/ J2EEServer=none//g' | /bin/sed 's/  / /g' | /bin/sed 's/\[/ /g' | /bin/sed 's/\]/ /g' | /bin/sed 's/  / /g' | /bin/sed 's/\"//g'`
+   /bin/echo $nagiosSvc | /bin/sed 's/\\//g' > $backslashWorkFile
+   nagiosSvc=`/bin/cat $backslashWorkFile`
+   metricName=`/bin/echo $nagiosSvc | $awk -F" " '{print $NF}'`
+   nagiosSvcField2=`/bin/echo $nagiosSvc | $awk '{print $2}`
+   case $nagiosSvcField2 in
+               Memory) nagiosSvc=`/bin/echo $nagiosSvc` ;;
+           MemoryPool) nagiosSvc=`/bin/echo $nagiosSvc` ;;
+                    *) nagiosSvc=`/bin/echo $nagiosSvc | /bin/sed "s/ $metricName//g"` ;;
+   esac
+   nagiosSvc="JMX: ${app} ${nagiosSvc}"
+   case $metricName in
+      CollectionUsage|HeapMemoryUsage|NonHeapMemoryUsage|Usage)
+# Each of the above metric-types returns four values plus an opening and 
+# closing brace, for a total of six lines
+         ((expectedOutFileLines = expectedOutFileLines + 6))
+         calcRate=No
+         metricName=committed
+         thresholdField=2
+         formatArrayEntry
+         metricName=init
+         thresholdField=3
+         formatArrayEntry
+         metricName=max
+         thresholdField=4
+         formatArrayEntry
+         metricName=used
+         thresholdField=5
+         formatArrayEntry ;;
+      committedheapsize-count|committednonheapsize-count|countother|initheapsize-count|initnonheapsize-count|maxheapsize-count|maxnonheapsize-count|usedheapsize-count|usednonheapsize-count|threadcount)
+# Each of the above metric-types returns six values plus an opening and 
+# closing brace, for a total of six lines
+         ((expectedOutFileLines = expectedOutFileLines + 8))
+         metricName=`/bin/echo $metricName | /bin/sed 's/-count//g'`
+         calcRate=No
+         thresholdField=2
+         formatArrayEntry ;;
+      countbytesreceived|countbytestransmitted|countrequests|totalstartedthreadcount)
+         ((expectedOutFileLines = expectedOutFileLines + 8))
+         calcRate=Yes
+         metricName="${metricName}PerMin"
+         thresholdField=2
+         formatArrayEntry ;;
+      accessCount|bytesReceived|bytesSent|classLoadTime|errorCount|hitCount|hitsCount|loadTime|processingTime|requestCount|CollectionCount|CollectionTime)
+         ((expectedOutFileLines = expectedOutFileLines + 1))
+         calcRate=Yes
+         metricName="${metricName}PerMin"
+         thresholdField=2
+         formatArrayEntry ;;
+      TotalCompilationTime)
+         ((expectedOutFileLines = expectedOutFileLines + 1))
+         calcRate=Yes
+         metricName=CompilationTimePerMin
+         thresholdField=2
+         formatArrayEntry ;;
+      TotalStartedThreadCount)
+         ((expectedOutFileLines = expectedOutFileLines + 1))
+         calcRate=Yes
+         metricName=StartedThreadCountPerMin
+         thresholdField=2
+         formatArrayEntry ;;
+      corethreads|currentthreadcount|currentthreadsbusy|countopenconnections|countqueued|deadlockedthreads|waitqueuelength)
+         /bin/echo $parmDetailLine | /bin/grep "amx:" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            ((expectedOutFileLines = expectedOutFileLines + 8))
+         else
+            ((expectedOutFileLines = expectedOutFileLines + 1))
+         fi
+         calcRate=No
+         thresholdField=2
+         formatArrayEntry ;;
+      numconnused)
+         /bin/echo $parmDetailLine | /bin/grep "amx:" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            ((expectedOutFileLines = expectedOutFileLines + 10))
+         else
+            ((expectedOutFileLines = expectedOutFileLines + 1))
+         fi
+         calcRate=No
+         thresholdField=2
+         formatArrayEntry ;;
+      *)
+         ((expectedOutFileLines = expectedOutFileLines + 1))
+         calcRate=No
+         thresholdField=2
+         formatArrayEntry ;;
+   esac
+done
+#
+outFile=/tmp/checkJMX_${app}
+/bin/cat /dev/null > $outFile
+lineCount=0
+varCount=0
+varString=""
+#
+if [ "$userID" != "" ]
+then
+   java -jar $jmxtermPath -l $url -u $userID -p $password -n -i $getParms > $outFile 2>/dev/null
+else
+   java -jar $jmxtermPath -l $url -n -i $getParms > $outFile 2>/dev/null
+fi
+if [ $? -ne 0 ]
+then
+#   nsIndex=0
+#   lineCount=$nsIndex
+#   while [ $nsIndex -lt ${#nsArray[@]} ]
+#   do
+#      ((lineCount = lineCount + 1))
+#      var=0
+#      matchToArrayEntries
+#   done
+#   consolidateMetricsBySvc
+#   exitRoutine
+   exitMsg="jmxterm return code is non-zero, no metrics provided"
+   /bin/echo "$exitMsg" > $lastStatus
+   nscaPkt="${nagiosHost}${tab}JMX: ${app} metric collection status${tab}0${tab}${exitMsg}"
+   toNagios
+   exit 0
+fi
+#
+outFileLines=`/bin/cat $outFile | /usr/bin/wc -l | /bin/sed 's/ //g'`
+if [ $outFileLines -ne $expectedOutFileLines ]
+then
+   exitMsg="jmxterm returned unexpected number of metrics, probable input parameter problem, exiting"
+   /bin/echo "$exitMsg" > $lastStatus
+   if [ "$serviceDump" = "No" ]
+   then
+      nscaPkt="${nagiosHost}${tab}JMX: ${app} metric collection status${tab}1${tab}${exitMsg}"
+      toNagios
+      exit 0
+   else
+      /bin/echo "jmxterm returned unexpected number of metrics, probable input parameter problem, exiting" >> /tmp/jmxSvcs_${app}
+      exit 0
+   fi
+fi
+#
+lineCount=0
+varCount=0
+varString=""
+blockStart=No
+currSSE=`/bin/date '+%s'`
+for line in `/bin/cat $outFile`
+do
+   /bin/echo $line | /bin/grep "{" > /dev/null
+   if [ $? -eq 0 ]
+   then
+      blockStart=Yes
+   else
+      /bin/echo $line | /bin/grep "}" > /dev/null
+      if [ $? -eq 0 ]
+      then
+         blockStart=No
+      else
+         if [ $blockStart = Yes ]
+         then
+            label=`/bin/echo $line | $awk '{print $1}'`
+            case $label in
+               description|lastSampleTime|name|startTime|unit|highWaterMark|lowWaterMark)          continue ;;
+               *) ((lineCount = lineCount + 1))
+                  if [ $label = current ]
+                  then
+                     line=`/bin/echo $line | /bin/sed 's/ = /|/g'`
+                     var=`/bin/echo $line | $cut -f2 -d"|" | /bin/sed 's/;//g'`
+                  else
+                     var=`/bin/echo $line | $awk '{print $3}' | /bin/sed 's/;//g'`
+                  fi ;;
+            esac
+         else
+            ((lineCount = lineCount + 1))
+            var=$line
+         fi
+         matchToArrayEntries
+      fi
+   fi
+done
+#
+consolidateMetricsBySvc
+#
+/usr/bin/test -s /tmp/jmxSvcs_${app}
+if [ $? -eq 0 ]
+then
+   sendSvcsToNagios
+fi
+#/bin/rm /tmp/jmxSvcs_${app}
+#
+exitRoutine
+#
