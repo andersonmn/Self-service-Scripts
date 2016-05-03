@@ -1,0 +1,731 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaFS information and usage:"
+/bin/echo "------------------------------------"
+/bin/echo " 1. captures filesystem metrics for Linux systems only"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or in /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. execution requires presence of a parameter file named"
+/bin/echo "    \"fs_parms.dta\" in the executing user's home directory"
+/bin/echo "    else the script will exit"
+/bin/echo " 5. The parameter file must contain one line for each filesystem"
+/bin/echo "    to be monitored. Each line consists of several space-delimited"
+/bin/echo "    fields:"
+/bin/echo ""
+/bin/echo "    filesystem       - filesystem prefixed with \"FS=\""
+/bin/echo "                       (e.g. \"FS=/local\")"
+/bin/echo "    threshold type   - designates if threshold values are for"
+/bin/echo "                       percentage used or Kb (kilobytes) remaining"
+/bin/echo "                       (a \"%\" value indicates percentage used,"
+/bin/echo "                       any other value indicates Kb remaining -"
+/bin/echo "                       please use only \"Kb\" as an alternative to"
+/bin/echo "                       the percent-sign symbol)"
+/bin/echo "    threshold values - either or both of \"warning\" (designated"
+/bin/echo "                       with a \"w\") and \"critical\" (designated"
+/bin/echo "                       with a \"c\") may be specified in a comma-"
+/bin/echo "                       delimited string with no spaces"
+/bin/echo "                       (e.g. \"w=90,c=95\", or \"w=150000\")"
+/bin/echo "    support code     - the code associated with an on-call role"
+/bin/echo "                       used for warning/critical notifications,"
+/bin/echo "                       THIS FIELD IS NOT REQUIRED - when absent,"
+/bin/echo "                       the default on-call role for this host"
+/bin/echo "                       is used (to designate a support code for"
+/bin/echo "                       a role which is not the host default, see"
+/bin/echo "                       your monitoring administrator)"
+/bin/echo ""
+/bin/echo "    Examples:"
+/bin/echo "       FS=/tmp % w=90,c=95"
+/bin/echo "       FS=/local Kb w=2000,c=1500"
+/bin/echo "       FS=/var % c=95"
+/bin/echo "       FS=/ % c=95,w=90 EdWebEmbedDev"
+/bin/echo ""
+/bin/echo " 6. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 7. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 8. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo " 9. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_Filesystem\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to the list of monitored file"
+/bin/echo "    filesystems)"
+/bin/echo "10. if expected execution results are not observed, check the"
+/bin/echo "    contents of the \"nscaFS_lastStatus\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "##### toNagios #####"
+   set -x
+fi
+#
+if [ "$Mnt" = "root" ]
+then
+   svcEntity="/"
+else
+   svcEntity="$Mnt"
+fi
+#
+if [ $serviceSetup = No ]
+then
+#  Nagios service setup not triggered with this script execution
+   sleepValue=0
+   targetHost=$nagiosHost
+   nagiosSvc="Filesystem: ${svcEntity}"
+   nagiosMsg=$(/bin/echo ${nagiosMsg} | /bin/sed 's/~/@/g')
+else
+#  Nagios service setup triggered with this script execution (first time)
+   sleepValue=2
+   targetHost=$nscaTarget
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   if [ "$capturedSvc" = "" ]
+   then
+      capturedSvc="Filesystem: ${svcEntity}"
+   fi
+   nagiosMsg="Filesystem@${nagiosHost}@${nagiosHostType}@APPNAME@${capturedSvc}@1@@${saveNagiosHost}@"
+   capturedSvc=""
+fi
+nscaPkt="${targetHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ "$debugSw" = "no" ]
+then
+   if [ $serviceSetup = No ]
+   then
+      /bin/echo "$nscaPkt" >> $nscaPacketFile
+   else
+      /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+      /bin/sleep $sleepValue
+   fi
+else
+   /bin/echo "$nscaPkt"
+fi
+}
+#
+retrieveParmFields ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "##### retrieveParmFields #####"
+   set -x
+fi
+#
+parmArg="FS=${Mnt} "
+parmLine=$(/bin/grep "$parmArg" ${fsParms})
+if [ "$parmLine" != "" ]
+then
+   oldIFS="$IFS"
+   IFS=" "
+   set -- $parmLine
+   threshType=$2
+   thresholds=$3
+   supportCode=$4
+   IFS="$oldIFS"
+   if [ "$supportCode" = "" ]
+   then
+      supportCode=occLookup
+   fi
+   flagName=$(/bin/echo ${Mnt} | /bin/sed 's/\//-/g')
+   mailFlagFile=${homeDir}/FSSpaceChkMail_${nagiosHost}_${flagName}
+   alertFlagFile=${homeDir}/FSSpaceChkAlert_${nagiosHost}_${flagName}
+   alertFlagFileMajor=${homeDir}/FSSpaceChkAlertMajor_${nagiosHost}_${flagName}
+   /usr/bin/test -f $mailFlagFile
+   if [ $? -eq 0 ]
+   then
+      mailSent=yes
+   else
+      mailSent=no
+   fi
+   /usr/bin/test -s $alertFlagFile
+   if [ $? -eq 0 ]
+   then
+      alertPosted=yes
+      lastAlert=$(/bin/cat $alertFlagFile)
+   else
+      alertPosted=no
+      lastAlert=none
+   fi
+   if [ "$Mnt" = "/" ]
+   then
+      Mnt=root
+   fi
+   if [ "$threshType" = "%" ]
+   then
+      qualifier="%"
+   else
+      qualifier=Kb
+   fi
+   threshClause=X
+   holdClause=""
+   clauseCount=0
+   warnThresh=null
+   critThresh=null
+   while [ "$threshClause" != "" ]
+   do
+      ((clauseCount = clauseCount + 1))
+      threshClause=$(/bin/echo ${thresholds} | $cut -f$clauseCount -d",")
+      if [ "$threshClause" != "$holdClause" ]
+      then
+         holdClause=$threshClause
+         oldIFS="$IFS"
+         IFS="="
+         set -- $threshClause
+         threshLabel=$1
+         threshValue=$2
+         IFS="$oldIFS"
+#        Determine if threshold parameter is numeric
+         threshHold=$(/bin/echo ${threshValue} | /bin/sed 's/[0-9,.]//g')
+         if [ "$threshHold" = "" ]
+         then
+#           The value is numeric
+            case $threshLabel in
+               w) warnThresh=$threshValue ;;
+               c) critThresh=$threshValue ;;
+            esac
+         fi
+      else
+         threshClause=""
+      fi
+   done
+   if [ "$warnThresh" = "null" ]
+   then
+      if [ "$critThresh" = "null" ]
+      then
+         thresholds="thresholds: none specified"
+      else
+         thresholds="thresholds: critical=${critThresh}${qualifier}"
+      fi
+   else
+      if [ "$critThresh" = "null" ]
+      then
+         thresholds="thresholds: warning=${warnThresh}${qualifier}"
+      else
+         thresholds="thresholds: warning=${warnThresh}${qualifier}, critical=${critThresh}${qualifier}"
+      fi
+   fi
+fi
+}
+#
+capCheck ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo " ##### capCheck #####"
+   set -x
+fi
+#
+pcntIncreaseWarning=no
+last_pct_found=no
+for pct_line in `/bin/cat $last_pct`
+do
+   pct_fs=$(/bin/echo ${pct_line} | $cut -f1 -d" ")
+   if [ "$pct_fs" = "$Mnt" ]
+   then
+      last_pct_found=yes
+      Cap_last=$(/bin/echo ${pct_line} | $cut -f2 -d" ")
+      if [ $Cap -ge $Cap_last ]
+      then
+         ((Diff = Cap - Cap_last))
+         if [ $Diff -ge 20 ]
+         then
+            pcntIncreaseWarning=yes
+            key=FSPcntIncr
+            msg="$Mnt utilization increased by $Diff from $Cap_last% to $Cap%, ${thresholds}"
+            nagiosMsg="$key~$locName~$nagiosHost~$Mnt~$msg~"
+            exitCode=1
+            toNagios
+         fi
+      else
+         ((Diff = Cap_last - Cap))
+         if [ $Diff -ge 10 ]
+         then
+            key=FSPcntDecr
+            msg="$Mnt utilization decreased by $Diff from $Cap_last% to $Cap%, ${thresholds}"
+            nagiosMsg="$key~$locName~$nagiosHost~$Mnt~$msg~"
+#           Commented out because this was causing the failure to close
+#           previously posted alerts by turning the related Nagios service
+#           OK/green
+#            exitCode=0
+#            toNagios
+         fi
+      fi
+      /bin/echo "${Mnt} ${Cap}" >> $last_pct_new
+      break
+   fi
+done
+if [ $last_pct_found = no ]
+then
+   /bin/echo $Mnt $Cap >> $last_pct_new
+fi
+}
+#
+allClear ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo " ##### allClear #####"
+   set -x
+fi
+#
+if [ $mailSent = yes ]
+then
+   /bin/rm $mailFlagFile
+   mailCode=yes
+fi
+#
+if [ $alertPosted = yes -o $pcntIncreaseWarning = yes ]
+then
+   severity=clear
+   msg="filesystem $Mnt space is okay, related alerts cleared"
+   exitCode=0
+   nagiosMsg="$key~$locName~$nagiosHost~$severity~$Mnt~$supportCode~$msg~$mailCode"
+   toNagios
+   /bin/rm $alertFlagFile
+else
+   if [ $nagiosUpdateEligible = Yes ]
+   then
+      severity=clear
+      nagiosMsg="${msg} | twpFileSys OK ${msg}"
+      exitCode=0
+      toNagios
+   fi
+fi
+#
+}
+#
+postAlert ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo " ##### postAlert #####"
+   set -x
+fi
+#
+if [ $severity = crit ]
+then
+#  This is a critical alert condition
+#   if [ $lastAlert != crit ]
+#   then
+#     The last alert was not critical, or there was not a previous alert,
+#     so create or update flag file with "crit" status and post alert
+#     (If there was a previous critical alert, don't post a new one)
+      nagiosMsg="$key~$locName~$nagiosHost~$severity~$Mnt~$supportCode~$msg~$mailCode~"
+      toNagios
+      /bin/echo "crit" > $alertFlagFile
+#   fi
+else
+#  This is not a critical alert condition, create or update flag file with
+#  "notMajor" status, post alert
+   nagiosMsg="$key~$locName~$nagiosHost~$severity~$Mnt~$supportCode~$msg~$mailCode~"
+   toNagios
+   /bin/echo "notMajor" > $alertFlagFile
+fi
+}
+#
+setMailCode ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo " ##### setMailCode #####"
+   set -x
+fi
+#
+/usr/bin/test -f $mailFlagFile
+if [ $? -ne 0 ]
+then
+   mailCode=yes
+fi
+}
+#
+thresholdCheck ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo " ##### thresholdCheck #####"
+   set -x
+fi
+#
+if [ "$warnThresh" = "null" ]
+then
+   if [ "$critThresh" = "null" ]
+   then
+      allClear
+   else
+      if [ $metric $compare1 $critThresh ]
+      then
+         severity=crit
+         exitCode=2
+         postAlert
+      else
+         allClear
+      fi
+   fi
+else
+   if [ "$critThresh" = "null" ]
+   then
+      if [ $metric $compare1 $warnThresh ]
+      then
+         severity=warn
+         exitCode=1
+         setMailCode
+         postAlert
+      else
+         allClear
+      fi
+   else
+      if [ $metric $compare2 $warnThresh ]
+      then
+         allClear
+      else
+#         if [ $metric $compare1 $warnThresh -a $metric $compare2 $critThresh ]
+         if [ $metric $compare2 $critThresh ]
+         then
+            severity=warn
+            exitCode=1
+            setMailCode
+         else
+            severity=crit
+            exitCode=2
+         fi
+         postAlert
+      fi
+   fi
+fi
+}
+#
+/usr/bin/test -f /bin/awk
+if [ $? -eq 0 ]
+then
+   awk=/bin/awk
+else
+   awk=/usr/bin/awk
+fi
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+if [ "$1" != "" ]
+then
+   /bin/echo "$1" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+      displayDocumentation
+   else
+      /bin/echo "$1" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo " ##### Top of Mainline #####"
+         debugSw=yes
+         set -x
+      else
+         debugSw=no
+      fi
+   fi
+else
+   debugSw=no
+fi
+#
+# Determine the path to the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaFS_lastStatus
+nscaPacketFile=${homeDir}/nscaFS_nscaPackets
+/bin/cat /dev/null > $nscaPacketFile
+#
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   /bin/echo "StopAllMonitoring file encountered, exiting" > $lastStatus
+   exit 0
+fi
+#
+fsParms=$homeDir/fs_parms.dta
+/usr/bin/test -s $fsParms
+if [ $? -ne 0 ]
+then
+   /bin/echo "${fsParms} file null or absent, exiting" > $lastStatus
+   exit 1
+fi
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         nscaFound=Yes
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+tab="	"
+#
+# Capture the name to use as the target host in Nagios
+# from the ${homeDir}/Nagios_hostname.dta file, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+saveNagiosHost=$nagiosHost
+#
+runCount=$(/bin/ps -ef | /bin/grep nscaFS | /bin/grep -v grep | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $runCount -gt 10 ]
+then
+   /bin/echo "process backlog encountered, exiting" > $lastStatus
+   exit 0
+fi
+#
+lastUpdateFile=$homeDir/lastUpdateFilesystems
+#
+serviceSetup=No
+#
+# Has the list of monitored filesystems changed since the last check?
+savedData=/tmp/nscaFS_fsParms_saved
+workData=/tmp/nscaFS_fsParms_work
+/usr/bin/test -f $savedData
+if [ $? -eq 0 ]
+then
+   /bin/cat $fsParms | $awk '{print $1}' > $workData
+   /usr/bin/diff $workData $savedData > /dev/null
+   if [ $? -ne 0 ]
+   then
+#     The monitored filesystem list has changed
+      serviceSetup=Yes
+      /bin/cat $workData > $savedData
+   fi
+else
+   /bin/cat $fsParms | $awk '{print $1}' > $savedData
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_Filesystem
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   /bin/touch $serviceSetupFlag
+   serviceSetup=Yes
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -f $lastUpdateFile
+   if [ $? -eq 0 ]
+   then
+      /bin/rm $lastUpdateFile
+   fi
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   capturedSvc="ACCUMULATE START"
+   toNagios
+   /bin/sleep 10
+fi
+#
+todayDate=$(/bin/date '+%C%y%m%d')
+#
+locName=locLookup
+#
+mt_out=/tmp/fs_chk_mt_out
+df_out=/tmp/fs_chk_df_out
+df_out_hold=/tmp/fs_chk_df_out_hold
+last_pct=/tmp/last_pct
+/usr/bin/test -f $last_pct
+if [ $? -ne 0 ]
+then
+   /bin/touch $last_pct
+fi
+last_pct_new=/tmp/last_pct_new
+/bin/cat /dev/null > $last_pct_new
+#
+currSSE=$(/bin/date '+%s')
+nagiosUpdateEligible=No
+/usr/bin/test -s $lastUpdateFile
+if [ $? -ne 0 ]
+then
+   /bin/echo $currSSE > $lastUpdateFile
+   nagiosUpdateEligible=Yes
+else
+   read lastUpdateSSE < $lastUpdateFile
+   ((elapsedSinceUpdate = currSSE - lastUpdateSSE))
+   if [ $elapsedSinceUpdate -ge 1200 ]
+   then
+      nagiosUpdateEligible=Yes
+      /bin/echo $currSSE > $lastUpdateFile
+   fi
+fi
+#
+/usr/bin/find $homeDir -mtime +3 -name "todayDateForFilesystems*" -exec /bin/rm {} ';'
+#
+IFS="
+"
+#
+/bin/mount | $awk '{print $3}' > $mt_out
+#
+/bin/cat /dev/null > $df_out
+#
+for df_in in `/bin/cat $fsParms | $awk '{print $1}' | $cut -f2 -d"="`
+do
+   mounted_fs=no
+   for mt_in in `/bin/cat $mt_out`
+   do
+      if [ "$mt_in" = "$df_in" ]
+      then
+         mounted_fs=yes
+         break
+      fi
+   done
+   if [ $mounted_fs = yes ]
+   then
+      dfRC=Good
+      /bin/df -k $df_in | /bin/grep -v Available > $df_out_hold
+      if [ $? -ne 0 ]
+      then
+         dfRC=Bad
+      else
+         dfLines=$(/bin/cat $df_out_hold | /usr/bin/wc -l | /bin/sed 's/ //g')
+         if [ $dfLines -gt 1 ]
+         then
+            lastLine=$(/usr/bin/tail -1 $df_out_hold)
+            /bin/echo $lastLine >> $df_out
+         else
+#            field2=$(/bin/cat $df_out_hold | $awk '{print $2}')
+#            field3=$(/bin/cat $df_out_hold | $awk '{print $3}')
+#            field4=$(/bin/cat $df_out_hold | $awk '{print $4}')
+#            field5=$(/bin/cat $df_out_hold | $awk '{print $5}')
+#            field6=$(/bin/cat $df_out_hold | $awk '{print $6}')
+            read df_out_line < $df_out_hold
+            oldIFS="$IFS"
+            IFS=" "
+            set -- $df_out_line
+            field2=$2
+            field3=$3
+            field4=$4
+            field5=$5
+            field6=$6
+            IFS="$oldIFS"
+            /bin/echo "$field2 $field3 $field4 $field5 $field6" >> $df_out
+         fi
+      fi
+      if [ "$dfRC" = "Bad" ]
+      then
+         /bin/echo"df command failed, /tmp may be full, nscaFS exiting"
+         exit 1
+      fi
+   fi
+done
+#
+for df_line in `/bin/cat $df_out`
+do
+   mailCode=no
+   oldIFS="$IFS"
+   IFS=" "
+   set -- $df_line
+   Fs=$1
+   Used=$2
+   Av=$3
+   Cap=$4
+   Mnt=$5
+   IFS="$oldIFS"
+   Cap=$(/bin/echo $Cap | /bin/sed "s/%//g")
+   retrieveParmFields
+   capCheck
+   key=FileSysSpace
+   if [ "$threshType" = "%" ]
+   then
+      msg="$Mnt is $Cap% full, $Av Kb left, $Used Kb used, ${thresholds}"
+      metric=$Cap
+      compare1="-gt"
+      compare2="-lt"
+   else
+#      msg="$Mnt has $Av Kb left, $Cap% full, ${thresholds}"
+      msg="$Mnt is $Cap% full, $Av Kb left, $Used Kb used, ${thresholds}"
+      metric=$Av
+      compare1="-lt"
+      compare2="-gt"
+   fi
+   thresholdCheck
+done
+#
+if [ $serviceSetup = Yes ]
+then
+   capturedSvc="ACCUMULATE STOP"
+   nagiosHost=$saveNagiosHost
+   /bin/sleep 10
+   toNagios
+fi
+#
+/bin/cat $last_pct_new > $last_pct
+/bin/rm $last_pct_new
+#
+/usr/bin/test -s $nscaPacketFile
+if [ $? -eq 0 ]
+then
+   /bin/cat $nscaPacketFile | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+fi
+#
+/bin/echo "processing completed normally" > $lastStatus
+#
