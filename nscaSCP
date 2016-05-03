@@ -1,0 +1,397 @@
+#!/bin/ksh
+displayDocumentation ()
+{
+/bin/echo "Script nscaSCP information and usage:"
+/bin/echo "-------------------------------------"
+/bin/echo " 1. captures milliseconds for SCP of 1MB file (Linux systems only)"
+/bin/echo " 2. communicates with Nagios via NSCA"
+/bin/echo "    (NSCA daemon and configuration file must be present in the"
+/bin/echo "     home directory of the executing user or /usr/local/bin,"
+/bin/echo "     else the script will exit)"
+/bin/echo " 3. if the executing user's home directory contains a non-null file"
+/bin/echo "    named \"nscaTarget.dta\", the value in that file is used as the"
+/bin/echo "    destination for NSCA data, else \"monitor1.wpprivate.com\" is"
+/bin/echo "    used (nscaTarget.dta content should be the IP of monitor1 or"
+/bin/echo "    another Nagios server)"
+/bin/echo " 4. requires argument for SCP target (IP address or hostname,"
+/bin/echo "    IP address preferred, target must be enabled for SCP from"
+/bin/echo "    source with no password)"
+/bin/echo " 5. accepts arguments for warning/critical thresholds which apply"
+/bin/echo "    only to the \"round-trip\" time, not the \"transfer\" time"
+/bin/echo "    - must be specified as a comma-delimited, no-space string"
+/bin/echo "    - options must appear exactly as shown, case sensitive"
+/bin/echo "    - may appear in any order or combination"
+/bin/echo "    - metric-to-threshold compares use the \"-ge\" operator"
+/bin/echo "      Valid threshold parameter options:"
+/bin/echo "         warn             crit"
+/bin/echo "         noPerfData             (no Nagios performance data)"
+/bin/echo "                                (i.e., no data to Graphite)"
+/bin/echo "      Examples:"
+/bin/echo "         warn=5000"
+/bin/echo "         crit=10000"
+/bin/echo "         warn=5000,crit=10000,noPerfData"
+/bin/echo " 6. accepts \"tries=n\" argument (case insensitive) to be used"
+/bin/echo "    as the \"max_check_attempts\" value in the auto-deployed"
+/bin/echo "    Nagios service (if not supplied, default is 1)"
+/bin/echo "    Explanation - if there are warning and/or critical thresholds"
+/bin/echo "    in effect for this monitor, and if the warning/critical action"
+/bin/echo "    (email/alert) should occur immediately upon a threshold being"
+/bin/echo "    met/exceeded, then don't supply this argument, or supply"
+/bin/echo "    \"tries=1\". However, if you want a threshold-met/exceeded"
+/bin/echo "    condition to persist for some duration before action is taken,"
+/bin/echo "    then use this argument to define the desired duration."
+/bin/echo "    The \"duration\" is actually the number of consecutive times"
+/bin/echo "    the Nagios service must be set to a WARNING or CRITICAL state"
+/bin/echo "    in order to trigger an action. For example, if this script"
+/bin/echo "    is run every five minutes and a non-OKAY condition must"
+/bin/echo "    persist for ten minutes before notification takes place,"
+/bin/echo "    then use \"tries=3\":"
+/bin/echo "    a. problem state onset occurs - Nagios check attempts=1"
+/bin/echo "    b. 5 minutes later, problem state persists - check attempts=2"
+/bin/echo "    c. 5 minutes later, problem state persists - check attempts=3,"
+/bin/echo "       action (email/alert) is triggered"
+/bin/echo " 7. accepts \"debug\" argument (value \"debug\", case insensitive)"
+/bin/echo "    to trace logic performed by the script and disable transmission"
+/bin/echo "    of data to Nagios"
+/bin/echo " 8. script will exit if a StopAllMonitoring (case insensitive) file"
+/bin/echo "    is encountered in /var/tmp"
+/bin/echo " 9. the script attempts to find the local hostname first in a file"
+/bin/echo "    named Nagios_hostname.dta in the executing user's home"
+/bin/echo "    directory, else the \"uname -n\" command is used"
+/bin/echo "10. for hosts/services not manually established in Nagios"
+/bin/echo "    configuration, the first execution will trigger auto-deployment"
+/bin/echo "    of the needed Nagios object(s) - to re-trigger auto-deployment,"
+/bin/echo "    remove the \"NagiosServiceSetupTriggered_SCP\" file"
+/bin/echo "    from the executing user's home directory (auto-deployment is"
+/bin/echo "    also re-triggered by a change to the list of monitored"
+/bin/echo "    interfaces or a to the \"tries\" parameter)"
+/bin/echo "11. if expected execution results are not observed, check contents"
+/bin/echo "    of the \"nscaSCP_lastStatus_target\" file in the executing"
+/bin/echo "    user's home directory"
+exit 0
+}
+#
+toNagios ()
+{
+if [ $debugSw = yes ]
+then
+   /bin/echo "####################"
+   /bin/echo "##### toNagios #####"
+   /bin/echo "####################"
+   set -x
+fi
+#
+# Format an NSCA-compatible string and send to Nagios via NSCA
+nscaPkt="${nagiosHost}${tab}${nagiosSvc}${tab}${exitCode}${tab}${nagiosMsg}"
+if [ $debugSw = no ]
+then
+   /bin/echo "$nscaPkt" | $nscaBinaryPath $nscaTarget -c $nscaConfigPath > /dev/null 2>&1
+else
+   /bin/echo "$nscaPkt"
+fi
+#
+/bin/echo "$lastStatusMsg" > $lastStatus
+exit 0
+}
+#
+perfDataCheck ()
+{
+if [ "$debugSw" = "yes" ]
+then
+   /bin/echo "##### perfDataCheck #####"
+   set -x
+fi
+#
+# If a threshold argument was supplied, and if that argument contains the
+# string "noPerfData", set the perfData switch to No (no perfdata will be sent
+# to Nagios and thus no data to Graphite
+/bin/echo $argString | /bin/grep noPerfData > /dev/null
+if [ $? -eq 0 ]
+then
+   perfData=No
+   argString=$(/bin/echo $argString | /bin/sed 's/noPerfData//g' | /bin/sed 's/,,/,/g')
+fi
+}
+#
+/usr/bin/test -f /bin/cut
+if [ $? -eq 0 ]
+then
+   cut=/bin/cut
+else
+   cut=/usr/bin/cut
+fi
+#
+IFS="
+"
+tries=1
+argString=""
+debugSw=no
+for inputArg in $1 $2 $3 $4 $5
+do
+   /bin/echo "$inputArg" | /bin/grep -i help > /dev/null
+   if [ $? -eq 0 ]
+   then
+      displayDocumentation
+   else
+      /bin/echo "$inputArg" | /bin/grep -i debug > /dev/null
+      if [ $? -eq 0 ]
+      then
+         /bin/echo "##### Top of mainline #####"
+         debugSw=yes
+         set -x
+      else
+         /bin/echo "$inputArg" | /bin/grep -i "tries=" > /dev/null
+         if [ $? -eq 0 ]
+         then
+            oldIFS="$IFS"
+            IFS="="
+            set -- $inputArg
+            tries=$2
+            IFS="$oldIFS"
+#           Is the tries value numeric?
+            triesHold=$(/bin/echo ${tries} | /bin/sed 's/[0-9]//g')
+            if [ "$triesHold" != "" ]
+            then
+#              The tries value is not numeric, default to 1
+               tries=1
+            fi
+         else
+            /bin/echo "$inputArg" | /bin/grep "=" > /dev/null
+            if [ $? -eq 0 ]
+            then
+               argString="$inputArg"
+               perfDataCheck
+               argString=$(/bin/echo ${argString} | /bin/sed 's/,/ /g')
+            else
+               target=$inputArg
+            fi
+         fi
+      fi
+   fi
+done
+#
+# Determine path for the send_nsca and send_nsca.cfg modules, if any
+owner=$(/usr/bin/whoami)
+homeDir=$(/bin/grep ${owner} /etc/passwd | $cut -f6 -d":")
+lastStatus=${homeDir}/nscaSCP_lastStatus_${target}
+lastStatusMsg="processing completed normally"
+#
+nscaFound=No
+for nscaDir in $homeDir /usr/local/bin /usr/local/nagios
+do
+   /usr/bin/test -s ${nscaDir}/send_nsca
+   if [ $? -eq 0 ]
+   then
+      nscaBinaryPath=${nscaDir}/send_nsca
+      /usr/bin/test -s ${nscaDir}/send_nsca.cfg
+      if [ $? -eq 0 ]
+      then
+         nscaFound=Yes
+         nscaConfigPath=${nscaDir}/send_nsca.cfg
+         break
+      fi
+   fi
+done
+if [ $nscaFound = No ]
+then
+   /bin/echo "communication with Nagios not possible, NSCA binary not present" > $lastStatus
+   exit 1
+fi
+#
+/usr/bin/test -s ${homeDir}/nscaTarget.dta
+if [ $? -eq 0 ]
+then
+   read nscaTarget < ${homeDir}/nscaTarget.dta
+else
+   nscaTarget=monitor1.wpprivate.com
+fi
+#
+# Capture the name to use as the Nagios target host
+# from ${homeDir}/Nagios_hostname.dta, else use the "uname -n" command
+/usr/bin/test -s ${homeDir}/Nagios_hostname.dta
+if [ $? -eq 0 ]
+then
+   read nagiosHost < ${homeDir}/Nagios_hostname.dta
+else
+   nagiosHost=$(/bin/uname -n | $cut -f1 -d".")
+fi
+#
+# Check availability of NSCA binary
+nscaAvailable=No
+/usr/bin/test -f /usr/local/nagios/send_nsca
+if [ $? -eq 0 ]
+then
+   nscaAvailable=Yes
+   nscaPath=/usr/local/nagios/send_nsca
+   nscaCfgPath=/usr/local/nagios/send_nsca.cfg
+else
+   spgmaintHomeDir=$(/bin/grep "spgmaint:" /etc/passwd | $cut -f6 -d":")
+   if [ "$spgmaintHomeDir" != "" ]
+   then
+      /usr/bin/test -f ${spgmaintHomeDir}/send_nsca
+      if [ $? -eq 0 ]
+      then
+         nscaAvailable=Yes
+         nscaPath=${spgmaintHomeDir}/send_nsca
+         nscaCfgPath=${spgmaintHomeDir}/send_nsca.cfg
+      fi
+   fi
+fi
+if [ $nscaAvailable = No ]
+then
+#  NSCA apparently is not installed on this host, send mail to the
+#  monitoring administrator
+   mailTargetFile=${spgmaintHomeDir}/parms/check/monitorMail.dta
+   /usr/bin/test -s $mailTargetFile
+   if [ $? -eq 0 ]
+   then
+      read mailTarget < $mailTargetFile
+      mailMsg="NSCA binary not available on ${nagiosHost}, data not sent to Nagios"
+      /bin/echo "$mailMsg" | /bin/mail -s "$mailMsg" $mailTarget
+      exit 0
+   fi
+fi
+#
+# Setup variable values related to NSCA
+tab="	"
+nagiosSvc="File SCP Performance: $target"
+#
+# Check for existence of a StopAllMonitoring file in /var/tmp, if it exists,
+# then bypass processing
+ls /var/tmp | /bin/grep -i StopAllMonitoring > /dev/null
+if [ $? -eq 0 ]
+then
+   nagiosMsg="StopAllMonitoring file encountered, exiting"
+   lastStatusMsg="$nagiosMsg"
+   toNagios
+fi
+#
+processCount=$(/bin/ps -ef | /bin/grep nscaSCP | /bin/grep -v grep | /bin/grep ${target} | /usr/bin/wc -l | /bin/sed 's/ //g')
+if [ $processCount -gt 3 ]
+then
+   nagiosMsg="prior execution not completed, exiting"
+   lastStatusMsg="$nagiosMsg"
+   toNagios
+fi
+#
+serviceSetup=No
+#
+savedTries=/tmp/nscaSCP_savedTries_${target}
+/usr/bin/test -f $savedTries
+if [ $? -eq 0 ]
+then
+   read savedTriesData < $savedTries
+   if [ "$savedTriesData" != "$tries" ]
+   then
+      serviceSetup=Yes
+      /bin/echo "$tries" > $savedTries
+   fi
+else
+   /bin/echo "$tries" > $savedTries
+fi
+#
+serviceSetupFlag=${homeDir}/NagiosServiceSetupTriggered_SCP
+/usr/bin/test -f $serviceSetupFlag
+if [ $? -ne 0 ]
+then
+   serviceSetup=Yes
+   /bin/touch $serviceSetupFlag
+fi
+#
+if [ $serviceSetup = Yes ]
+then
+#  Trigger auto-deployment of Nagios service
+   /usr/bin/test -s /etc/redhat-release
+   if [ $? -eq 0 ]
+   then
+      /bin/grep CentOS /etc/redhat-release > /dev/null
+      if [ $? -ne 0 ]
+      then
+         /bin/grep "Red Hat" /etc/redhat-release > /dev/null
+         if [ $? -ne 0 ]
+         then
+            nagiosHostType=Unknown
+         else
+            nagiosHostType=RedHat
+         fi
+      else
+         nagiosHostType=CentOS
+      fi
+   else
+      /bin/uname -a | /bin/grep -i ubuntu > /dev/null
+      if [ $? -eq 0 ]
+      then
+         nagiosHostType=Ubuntu
+      else
+         nagiosHostType=Unknown
+      fi
+   fi
+   nagiosMsg="SCP@${nagiosHost}@${nagiosHostType}@Network@File SCP Performance: ${target}@${tries}@${target}@"
+   nagiosHost=$nscaTarget
+#  The nagiosHost value in the nagiosMsg string must be the local hostname
+#  but the nagiosHost value used in the nscaPkt sent to the Nagios
+#  "Service Setup Capture" service must be the nscaTarget.dta value, or if that
+#  file is absent, them monitor1
+   nagiosSvc="Service Setup Capture"
+   exitCode=1
+   toNagios
+fi
+#
+testFile=/tmp/SCP_testFile_${nagiosHost}
+/usr/bin/test -s $testFile
+if [ $? -ne 0 ]
+then
+   dd if=/dev/urandom of=${testFile} ibs=512 count=2048
+fi
+#
+# Get the system milliseconds-since-epoch value
+startMilliseconds=$(($(/bin/date +%s%N)/1000000))
+#
+transferSecs=$(/usr/bin/scp -v ${testFile} ${target}:/tmp 2>&1 >/dev/null | /bin/grep Transferred | /bin/awk '{print $(NF-1)}')
+#
+# Get the system milliseconds-since-epoch value
+stopMilliseconds=$(($(/bin/date +%s%N)/1000000))
+#
+((transferMillisecs = transferSecs * 1000))
+warnThresh=X
+critThresh=X
+if [ "$argString" != "" ]
+then
+   argStringHold=$(/bin/echo ${argString} | /bin/sed 's/ /,/g')
+   thresholds=", thresholds: $argStringHold"
+   oldIFS="$IFS"
+   IFS=" "
+   for argNum in $argString
+   do
+      argType=$(/bin/echo $argNum | $cut -f1 -d"=")
+      case $argType in
+         crit) critThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+         warn) warnThresh=$(/bin/echo $argNum | $cut -f2 -d"=") ;;
+      esac
+   done
+   IFS="$oldIFS"
+fi
+#
+((roundtripMillisecs = stopMilliseconds - startMilliseconds))
+nagiosMsg="transfer-ms=${transferMillisecs}, roundtrip-ms=${roundtripMillisecs}${thresholds} | transfer-ms=${transferMillisecs} roundtrip-ms=${roundtripMillisecs}"
+#
+exitCode=0
+for thresholdType in warn crit
+do
+   case $thresholdType in
+      warn) threshold=$warnThresh
+            statCode=1 ;;
+      crit) threshold=$critThresh
+            statCode=2 ;;
+   esac
+   if [ $threshold != X ]
+   then
+      if [ $roundtripMillisecs -ge $threshold ]
+      then
+         exitCode=$statCode
+      fi
+   fi
+done
+#
+# Send the string to Nagios via NSCA
+toNagios
